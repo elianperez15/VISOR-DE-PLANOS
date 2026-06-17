@@ -1,0 +1,16 @@
+{
+  "name": "saf-planos-api",
+  "version": "1.0.0",
+  "description": "SAF Visor de Planos — API REST (Express + node-oracledb)",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "oracledb": "^6.5.1"
+  }
+}
