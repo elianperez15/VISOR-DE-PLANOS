@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAF — Visor de Planos</title>
+  <!-- El CSS se importa desde src/main.ts (Vite lo procesa y extrae en build) -->
+</head>
+<body>
+<div class="saf-app" id="app">
+
+  <!-- ══════════════════ TOOLBAR ══════════════════ -->
+  <div class="saf-toolbar" id="toolbar">
+
+    <!-- ── Grupo: Archivo ── -->
+    <div class="tb-dropdown-wrap">
+      <button class="tb-btn tb-dropdown-btn" id="btn-archivo" title="Archivo">
+        <i data-lucide="folder-open"></i> <span class="tb-caret"><i data-lucide="chevron-down"></i></span>
+      </button>
+      <div class="tb-dropdown" id="dropdown-archivo">
+        <button class="tb-drop-item" id="btn-open"><i data-lucide="folder-open"></i> Abrir PDF <span class="tb-drop-kbd">Ctrl+O</span></button>
+        <div class="tb-drop-sep"></div>
+        <button class="tb-drop-item" id="btn-save"      disabled><i data-lucide="save"></i> Guardar sesión JSON</button>
+        <button class="tb-drop-item" id="btn-load"><i data-lucide="download"></i> Cargar sesión JSON</button>
+        <div class="tb-drop-sep"></div>
+        <button class="tb-drop-item tb-drop-xfdf" id="btn-xfdf-save" disabled><i data-lucide="file-text"></i> Guardar XFDF</button>
+        <button class="tb-drop-item tb-drop-xfdf" id="btn-xfdf-load"><i data-lucide="file-text"></i> Cargar XFDF</button>
+      </div>
+    </div>
+
+    <!-- Inputs ocultos -->
+    <input type="file" id="file-input"    accept=".pdf"        hidden>
+    <input type="file" id="session-input" accept=".json"       hidden>
+    <input type="file" id="xfdf-input"    accept=".xfdf,.xml" hidden>
+    <input type="file" id="compare-input" accept=".pdf"        hidden>
+
+    <div class="tb-sep"></div>
+
+    <!-- ── Páginas ── -->
+    <button class="tb-btn tb-icon" id="btn-prev" disabled title="Página anterior"><i data-lucide="chevron-left"></i></button>
+    <span class="tb-page-info" id="page-info">–</span>
+    <button class="tb-btn tb-icon" id="btn-next" disabled title="Página siguiente"><i data-lucide="chevron-right"></i></button>
+
+    <div class="tb-sep"></div>
+
+    <!-- ── Zoom ── -->
+    <button class="tb-btn tb-icon" id="btn-zoom-out" disabled title="Alejar"><i data-lucide="minus"></i></button>
+    <span class="tb-zoom-info" id="zoom-info">100%</span>
+    <button class="tb-btn tb-icon" id="btn-zoom-in"  disabled title="Acercar"><i data-lucide="plus"></i></button>
+    <button class="tb-btn tb-icon" id="btn-fit"       disabled title="Ajustar (F)"><i data-lucide="maximize"></i></button>
+
+    <div class="tb-sep"></div>
+
+    <!-- ── Estilo ── -->
+    <label class="tb-color-wrap" title="Color de trazo">
+      <span>Trazo</span><input type="color" id="stroke-color" value="#ef4444">
+    </label>
+    <label class="tb-color-wrap" title="Color de relleno">
+      <span>Relleno</span><input type="color" id="fill-color" value="#ef4444">
+    </label>
+    <input type="range" id="fill-alpha" min="0" max="100" value="10" class="tb-range" title="Opacidad relleno">
+    <select class="tb-select" id="stroke-width" title="Grosor">
+      <option value="1">1px</option>
+      <option value="2" selected>2px</option>
+      <option value="3">3px</option>
+      <option value="5">5px</option>
+      <option value="8">8px</option>
+    </select>
+
+    <div class="tb-sep"></div>
+
+    <!-- ── Acciones ── -->
+    <button class="tb-btn tb-btn-active tb-icon" id="btn-toggle-markup" title="Mostrar/ocultar markup"><i data-lucide="eye"></i></button>
+    <button class="tb-btn tb-icon" id="btn-undo"  disabled title="Deshacer (Ctrl+Z)"><i data-lucide="undo-2"></i></button>
+    <button class="tb-btn tb-icon" id="btn-redo"  disabled title="Rehacer (Ctrl+Y)"><i data-lucide="redo-2"></i></button>
+    <button class="tb-btn tb-icon" id="btn-calibrate" disabled title="Calibrar escala"><i data-lucide="ruler"></i></button>
+    <span class="tb-scale-info" id="scale-info" title="Escala calibrada" style="display:none"></span>
+    <button class="tb-btn tb-icon tb-btn-danger" id="btn-clear"      disabled title="Limpiar página"><i data-lucide="trash-2"></i></button>
+    <button class="tb-btn tb-icon" id="btn-export-png" disabled title="Exportar PNG"><i data-lucide="image"></i></button>
+    <button class="tb-btn tb-icon" id="btn-compare" disabled title="Comparar revisión (overlay)"><i data-lucide="layers"></i></button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn tb-icon" id="btn-toggle-panel"
+            title="Mostrar / ocultar panel de propiedades  (tecla P)"><i data-lucide="panel-right"></i></button>
+
+    <!-- ── Usuario actual + filtro de autores ── -->
+    <div class="tb-sep"></div>
+    <div class="tb-dropdown-wrap" id="users-wrap">
+      <button class="tb-btn tb-dropdown-btn" id="btn-users"
+              title="Usuario actual · Filtrar anotaciones por autor">
+        <span class="user-dot" id="user-dot"></span>
+        <span id="user-name-label">Anónimo</span>
+      </button>
+      <div class="tb-dropdown" id="dropdown-users" style="min-width:230px">
+
+        <!-- Nombre de usuario -->
+        <div class="tb-drop-header">Anotar como</div>
+        <div class="users-identity">
+          <input type="text" id="user-input" placeholder="Tu nombre…" maxlength="50" autocomplete="off">
+          <button class="users-apply-btn" id="btn-set-user" title="Aplicar"><i data-lucide="check"></i></button>
+        </div>
+
+        <div class="tb-drop-sep"></div>
+
+        <!-- Lista de autores en el plano -->
+        <div class="tb-drop-header">Autores en este plano</div>
+        <div id="authors-list">
+          <div class="author-empty">Abre un PDF para ver los autores</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Estado (derecha) -->
+    <span class="tb-status" id="tb-status">Sin documento</span>
+  </div>
+
+  <!-- ══════════════════ MAIN: riel + lienzo ══════════════════ -->
+  <div class="saf-main">
+
+    <!-- ── Riel de herramientas (estilo Procore) ── -->
+    <div class="tool-rail" id="tool-rail">
+      <button class="tb-btn tb-tool tb-btn-active" data-tool="select" title="Seleccionar (V)"><i data-lucide="mouse-pointer-2"></i></button>
+      <button class="tb-btn tb-tool"               data-tool="pan"    title="Mover vista (H)"><i data-lucide="hand"></i></button>
+      <button class="tb-btn tb-tool"               data-tool="eraser" title="Borrador (E)"><i data-lucide="eraser"></i></button>
+
+      <div class="rail-sep"></div>
+
+      <!-- Anotaciones -->
+      <div class="tb-dropdown-wrap">
+        <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-annot-group" title="Herramientas de anotación">
+          <span class="tool-gicon"><i data-lucide="arrow-up-right"></i></span>
+          <span class="tool-gname">Flecha</span>
+          <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+        </button>
+        <div class="tb-dropdown" id="dropdown-annot">
+          <button class="tb-drop-item tb-tool" data-tool="arrow"><i data-lucide="arrow-up-right"></i> Flecha <span class="tb-drop-kbd">A</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="rect"><i data-lucide="square"></i> Rectángulo <span class="tb-drop-kbd">R</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="ellipse"><i data-lucide="circle"></i> Elipse <span class="tb-drop-kbd">O</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="highlight"><i data-lucide="highlighter"></i> Resaltado</button>
+          <button class="tb-drop-item tb-tool" data-tool="freehand"><i data-lucide="pencil"></i> Dibujo libre <span class="tb-drop-kbd">D</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="cloud"><i data-lucide="cloud"></i> Nube de revisión</button>
+          <div class="tb-drop-sep"></div>
+          <button class="tb-drop-item tb-tool" data-tool="text"><i data-lucide="type"></i> Texto <span class="tb-drop-kbd">T</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="note"><i data-lucide="sticky-note"></i> Nota post-it <span class="tb-drop-kbd">N</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="callout"><i data-lucide="message-square"></i> Globo <span class="tb-drop-kbd">C</span></button>
+          <button class="tb-drop-item tb-tool" data-tool="stamp"><i data-lucide="stamp"></i> Sello</button>
+          <div class="tb-drop-sep"></div>
+          <button class="tb-drop-item tb-tool" data-tool="link"><i data-lucide="link"></i> Hipervínculo a hoja</button>
+          <div class="tb-drop-sep"></div>
+          <button class="tb-drop-item tb-tool" data-tool="image"><i data-lucide="camera"></i> Imagen / foto</button>
+        </div>
+      </div>
+
+      <!-- Medición -->
+      <div class="tb-dropdown-wrap">
+        <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-measure-group" title="Herramientas de medición">
+          <span class="tool-gicon"><i data-lucide="ruler"></i></span>
+          <span class="tool-gname">Cota</span>
+          <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+        </button>
+        <div class="tb-dropdown" id="dropdown-measure">
+          <div class="tb-drop-header">Requiere calibración de escala</div>
+          <button class="tb-drop-item tb-tool" data-tool="measure"><i data-lucide="ruler"></i> Cota lineal</button>
+          <button class="tb-drop-item tb-tool" data-tool="angle"><i data-lucide="triangle"></i> Ángulo (3 clics)</button>
+          <button class="tb-drop-item tb-tool" data-tool="area"><i data-lucide="hexagon"></i> Área</button>
+          <button class="tb-drop-item tb-tool" data-tool="perimeter"><i data-lucide="spline"></i> Perímetro</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Selector de archivo para colocar imágenes en el plano -->
+    <input type="file" id="img-place-input" accept="image/*" hidden>
+
+  <!-- ══════════════════ LIENZO ══════════════════ -->
+  <div class="saf-canvas" id="canvas-area">
+
+    <!-- Pantalla vacía -->
+    <div class="empty-state" id="empty-state">
+      <div class="empty-box">
+        <div class="empty-icon"><i data-lucide="ruler"></i></div>
+        <h2>Visor de Planos SAF</h2>
+        <p>Abre un PDF para agregar anotaciones · Guarda como <strong>.xfdf</strong> portable o <strong>.json</strong> interno</p>
+        <button class="btn-open-large" id="btn-open-large"><i data-lucide="folder-open"></i> Abrir PDF</button>
+        <div class="empty-tools">
+          <span>☁ Nubes de revisión</span>
+          <span>📏 Cotas con escala</span>
+          <span>∠ Ángulos</span>
+          <span>⬡ Áreas y perímetros</span>
+          <span>💬 Callouts</span>
+          <span>🔖 Sellos APROBADO/RFI</span>
+          <span>📄 Export XFDF portable</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canvas Fabric.js -->
+    <div class="canvas-wrapper" id="canvas-wrapper" style="display:none">
+      <canvas id="fabric-canvas"></canvas>
+    </div>
+
+    <!-- Hint modo dibujo -->
+    <div class="draw-hint" id="draw-hint" style="display:none"></div>
+  </div><!-- .saf-canvas -->
+
+  </div><!-- .saf-main -->
+
+  <!-- Panel área/perímetro -->
+  <div class="area-panel" id="area-panel" style="display:none">
+    <span id="area-value">—</span>
+    <button id="btn-area-close" title="Cerrar"><i data-lucide="x"></i></button>
+  </div>
+
+  <!-- Barra de comparación de revisiones -->
+  <div class="compare-bar" id="compare-bar" style="display:none">
+    <span class="cmp-icon"><i data-lucide="layers"></i></span>
+    <div class="cmp-revs">
+      <span class="cmp-a"><b>A</b> <span id="cmp-name-a">—</span></span>
+      <span class="cmp-b"><b>B</b> <span id="cmp-name-b">—</span></span>
+    </div>
+    <div class="cmp-slider">
+      <span>A</span>
+      <input type="range" id="cmp-opacity" min="0" max="100" value="50" title="Opacidad de la Revisión B">
+      <span>B</span>
+    </div>
+    <label class="cmp-tint"><input type="checkbox" id="cmp-tint"> Resaltar B en rojo</label>
+    <button id="btn-compare-change" title="Cambiar Revisión B (cargar otro PDF)"><i data-lucide="refresh-cw"></i></button>
+    <button id="btn-compare-close" title="Cerrar comparación"><i data-lucide="x"></i></button>
+  </div>
+
+</div><!-- .saf-app -->
+
+<!-- ══════════════════ MODAL: Calibrar escala ══════════════════ -->
+<div class="modal-overlay" id="modal-calibrate" style="display:none">
+  <div class="modal-box">
+    <h3>📐 Calibrar Escala</h3>
+
+    <!-- Tabs -->
+    <div class="cal-tabs">
+      <button class="cal-tab cal-tab-active" id="btn-cal-tab-points">📍 2 Puntos</button>
+      <button class="cal-tab" id="btn-cal-tab-direct">✏️ Directo</button>
+    </div>
+
+    <!-- ── Modo: 2 puntos ── -->
+    <div id="cal-mode-points">
+      <p>Haz clic en dos puntos del plano cuya distancia real conoces.</p>
+      <div id="cal-step-1"><p class="modal-hint">🖱 Clic en el <strong>primer punto</strong> de referencia.</p></div>
+      <div id="cal-step-2" style="display:none"><p class="modal-hint">🖱 Clic en el <strong>segundo punto</strong>.</p></div>
+      <div id="cal-step-3" style="display:none">
+        <div class="modal-row">
+          <label>Distancia real:</label>
+          <input type="number" id="cal-value" placeholder="ej: 5.00" min="0.001" step="any">
+          <select id="cal-unit">
+            <option value="m">m</option><option value="cm">cm</option>
+            <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
+          </select>
+        </div>
+        <p class="modal-hint" id="cal-px-hint"></p>
+      </div>
+    </div>
+
+    <!-- ── Modo: directo ── -->
+    <div id="cal-mode-direct" style="display:none">
+      <p>Ingresa la equivalencia directamente, sin hacer clic en el plano.</p>
+      <div class="modal-row">
+        <label>Distancia:</label>
+        <input type="number" id="cal-px-direct" placeholder="px" min="1" step="any" style="width:72px">
+        <span style="color:var(--text-muted);font-size:12px">px =</span>
+        <input type="number" id="cal-val-direct" placeholder="valor" min="0.001" step="any">
+        <select id="cal-unit-direct">
+          <option value="m">m</option><option value="cm">cm</option>
+          <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
+        </select>
+      </div>
+      <p class="modal-hint" id="cal-direct-preview" style="min-height:34px"></p>
+    </div>
+
+    <div class="modal-actions">
+      <button class="tb-btn" id="btn-cal-cancel">Cancelar</button>
+      <button class="tb-btn tb-btn-primary" id="btn-cal-apply" disabled>Aplicar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ MODAL: Sello ══════════════════ -->
+<div class="modal-overlay" id="modal-stamp" style="display:none">
+  <div class="modal-box modal-stamp">
+    <h3>🔖 Insertar Sello</h3>
+    <div class="stamp-grid">
+      <button class="stamp-opt s-approved"  data-stamp="APROBADO"    data-color="#16a34a">✅ APROBADO</button>
+      <button class="stamp-opt s-rejected"  data-stamp="RECHAZADO"   data-color="#dc2626">❌ RECHAZADO</button>
+      <button class="stamp-opt s-review"    data-stamp="EN REVISIÓN" data-color="#d97706">🔍 EN REVISIÓN</button>
+      <button class="stamp-opt s-info"      data-stamp="INFORMACIÓN" data-color="#2563eb">ℹ INFORMACIÓN</button>
+      <button class="stamp-opt s-warning"   data-stamp="PRECAUCIÓN"  data-color="#b45309">⚠ PRECAUCIÓN</button>
+      <button class="stamp-opt s-draft"     data-stamp="BORRADOR"    data-color="#6b7280">📝 BORRADOR</button>
+      <button class="stamp-opt s-nci"       data-stamp="NCI"         data-color="#7c3aed">🔴 NCI</button>
+      <button class="stamp-opt s-rfi"       data-stamp="RFI"         data-color="#0891b2">📋 RFI</button>
+    </div>
+    <!-- ── Etiquetas de estado (borde doble) ── -->
+    <div class="stamp-section-title">Etiquetas de estado</div>
+    <div class="stamp-grid label-grid">
+      <button class="stamp-label" data-stamp="ORIGINAL"   data-color="#3b82f6" data-style="label">ORIGINAL</button>
+      <button class="stamp-label" data-stamp="RECEIVED"   data-color="#22c55e" data-style="label">RECEIVED</button>
+      <button class="stamp-label" data-stamp="ISSUED"     data-color="#06b6d4" data-style="label">ISSUED</button>
+      <button class="stamp-label" data-stamp="FINAL"      data-color="#8b5cf6" data-style="label">FINAL</button>
+      <button class="stamp-label" data-stamp="FOR REVIEW" data-color="#f59e0b" data-style="label">FOR REVIEW</button>
+      <button class="stamp-label" data-stamp="SUPERSEDED" data-color="#64748b" data-style="label">SUPERSEDED</button>
+      <button class="stamp-label" data-stamp="PAST DUE"   data-color="#ef4444" data-style="hatch">PAST DUE</button>
+      <button class="stamp-label" data-stamp="VOID"       data-color="#6b7280" data-style="hatch">VOID</button>
+      <button class="stamp-label" data-stamp="CANCELLED"  data-color="#dc2626" data-style="hatch">CANCELLED</button>
+      <button class="stamp-label" data-stamp="REJECTED"   data-color="#b45309" data-style="hatch">REJECTED</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="tb-btn" id="btn-stamp-cancel">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Tooltip flotante: autor de la anotación -->
+<div id="annot-tooltip" class="annot-tooltip"></div>
+
+<!-- Lightbox para ver imágenes adjuntas -->
+<div id="att-lightbox" class="att-lightbox" style="display:none">
+  <img id="att-lightbox-img" alt="Adjunto">
+</div>
+
+<!-- Mini-toolbar flotante sobre la figura seleccionada -->
+<div id="fig-toolbar" class="fig-toolbar" style="display:none">
+  <button id="fig-toggle-att" title="Mostrar / ocultar el adjunto en el plano"></button>
+  <button id="fig-enlarge-att" title="Ampliar imagen"><i data-lucide="maximize"></i></button>
+</div>
+
+<!-- ══════════════════ PANEL: Propiedades de anotación ══════════════════ -->
+<div id="annot-panel" class="annot-panel" style="display:none">
+
+  <!-- Cabecera -->
+  <div class="ap-header">
+    <span class="ap-title">📋 Propiedades</span>
+    <button class="ap-close" id="btn-ap-close" title="Cerrar panel"><i data-lucide="x"></i></button>
+  </div>
+
+  <!-- Identidad (readonly) -->
+  <div class="ap-identity">
+    <span class="ap-id-dot" id="ap-id-dot"></span>
+    <div class="ap-id-info">
+      <span class="ap-id-autor" id="ap-id-autor">—</span>
+      <span class="ap-id-meta"  id="ap-id-meta">—</span>
+    </div>
+  </div>
+
+  <!-- Cuerpo con scroll -->
+  <div class="ap-body">
+
+    <!-- ── Hipervínculo (solo para enlaces) ── -->
+    <div class="ap-section" id="ap-link-section" style="display:none">
+      <div class="ap-section-label">Hipervínculo</div>
+      <div class="ap-field">
+        <label>Ir a la hoja N°</label>
+        <input type="number" id="ap-link-page" min="1" placeholder="Ej: 5">
+      </div>
+      <div class="ap-link-hint">Doble clic en el enlace para saltar a esa hoja.</div>
+    </div>
+
+    <!-- ── Adjuntos (fotos / archivos) — solo para el pin de cámara ── -->
+    <div class="ap-section" id="ap-att-section" style="display:none">
+      <div class="ap-section-label">Adjuntos <span id="ap-att-count" class="ap-att-count"></span></div>
+      <button class="ap-att-add" id="btn-ap-attach"><i data-lucide="paperclip"></i> Adjuntar foto o archivo</button>
+      <input type="file" id="ap-att-input" multiple
+             accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" hidden>
+      <div class="ap-att-grid" id="ap-att-grid"></div>
+    </div>
+
+    <!-- ── Texto en la figura ── -->
+    <div class="ap-section">
+      <div class="ap-section-label">Texto en la figura</div>
+      <div class="ap-field">
+        <input type="text" id="ap-label" placeholder="Escribe una etiqueta…  (o doble clic en la figura)" maxlength="120">
+      </div>
+    </div>
+
+    <!-- ── Apariencia ── -->
+    <div class="ap-section">
+      <div class="ap-section-label">Apariencia</div>
+      <div class="ap-style-row">
+        <label class="ap-style-color">Trazo<input type="color" id="ap-stroke"></label>
+        <label class="ap-style-color">Relleno<input type="color" id="ap-fill"></label>
+      </div>
+      <div class="ap-field">
+        <label>Grosor de línea · <span id="ap-stroke-w-val">2</span> px</label>
+        <input type="range" id="ap-stroke-w" min="1" max="12" step="1" value="2">
+      </div>
+      <div class="ap-field">
+        <label>Opacidad · <span id="ap-opacity-val">100</span>%</label>
+        <input type="range" id="ap-opacity" min="10" max="100" step="5" value="100">
+      </div>
+    </div>
+
+    <!-- ── Descripción ── -->
+    <div class="ap-section">
+      <div class="ap-section-label">Descripción / Nota</div>
+      <textarea id="ap-desc" class="ap-textarea" rows="4"
+                placeholder="Descripción de la observación…" maxlength="1000"></textarea>
+      <div class="ap-char-count"><span id="ap-desc-count">0</span> / 1000</div>
+    </div>
+
+  </div><!-- .ap-body -->
+
+  <!-- Footer -->
+  <div class="ap-footer">
+    <button class="ap-btn ap-btn-save"   id="btn-ap-save">💾 Guardar</button>
+    <button class="ap-btn ap-btn-cancel" id="btn-ap-cancel">Cancelar</button>
+  </div>
+
+</div><!-- #annot-panel -->
+
+<!-- Bundle ESM + TypeScript (fabric y pdf.js incluidos vía npm) -->
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

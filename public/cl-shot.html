@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><body style="margin:0;background:#fff">
+<div style="width:600px;height:400px"><canvas id="fc"></canvas></div>
+<script type="module">
+const {MarkupLayer}=await import('/src/core/markup-layer.ts');
+const {ScaleManager}=await import('/src/core/scale-manager.ts');
+const m=new MarkupLayer('fc',{scaleManager:new ScaleManager()}); m._pdfW=600;m._pdfH=400;
+m.strokeColor='#e11d48'; m.fillColor='rgba(0,0,0,0)'; m.strokeWidth=2;
+m._addCloudFromRect(60,60,360,180);    // ancha
+m._addCloudFromRect(120,230,300,360);  // más cuadrada
+m.canvas.renderAll();
+</script></body></html>
