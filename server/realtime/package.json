@@ -1,0 +1,10 @@
+{
+  "name": "saf-planos-collab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Microservicio de colaboración en tiempo real (relay WebSocket nativo, sin dependencias) para el visor de planos SAF",
+  "main": "collab-server.js",
+  "scripts": {
+    "start": "node collab-server.js"
+  }
+}

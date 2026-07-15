@@ -18,13 +18,7 @@
         <i data-lucide="folder-open"></i> <span class="tb-caret"><i data-lucide="chevron-down"></i></span>
       </button>
       <div class="tb-dropdown" id="dropdown-archivo">
-        <button class="tb-drop-item" id="btn-open"><i data-lucide="folder-open"></i> Abrir PDF <span class="tb-drop-kbd">Ctrl+O</span></button>
-        <div class="tb-drop-sep"></div>
-        <button class="tb-drop-item" id="btn-save"      disabled><i data-lucide="save"></i> Guardar sesión JSON</button>
-        <button class="tb-drop-item" id="btn-load"><i data-lucide="download"></i> Cargar sesión JSON</button>
-        <div class="tb-drop-sep"></div>
-        <button class="tb-drop-item tb-drop-xfdf" id="btn-xfdf-save" disabled><i data-lucide="file-text"></i> Guardar XFDF</button>
-        <button class="tb-drop-item tb-drop-xfdf" id="btn-xfdf-load"><i data-lucide="file-text"></i> Cargar XFDF</button>
+        <button class="tb-drop-item" id="btn-download-doc" disabled><i data-lucide="download"></i> Descargar documento</button>
       </div>
     </div>
 
@@ -36,18 +30,13 @@
 
     <div class="tb-sep"></div>
 
-    <!-- ── Páginas ── -->
-    <button class="tb-btn tb-icon" id="btn-prev" disabled title="Página anterior"><i data-lucide="chevron-left"></i></button>
-    <span class="tb-page-info" id="page-info">–</span>
-    <button class="tb-btn tb-icon" id="btn-next" disabled title="Página siguiente"><i data-lucide="chevron-right"></i></button>
-
-    <div class="tb-sep"></div>
-
     <!-- ── Zoom ── -->
     <button class="tb-btn tb-icon" id="btn-zoom-out" disabled title="Alejar"><i data-lucide="minus"></i></button>
     <span class="tb-zoom-info" id="zoom-info">100%</span>
     <button class="tb-btn tb-icon" id="btn-zoom-in"  disabled title="Acercar"><i data-lucide="plus"></i></button>
     <button class="tb-btn tb-icon" id="btn-fit"       disabled title="Ajustar (F)"><i data-lucide="maximize"></i></button>
+    <button class="tb-btn tb-icon" id="btn-rotate-left"  disabled title="Rotar 90° a la izquierda"><i data-lucide="rotate-ccw"></i></button>
+    <button class="tb-btn tb-icon" id="btn-rotate-right" disabled title="Rotar 90° a la derecha"><i data-lucide="rotate-cw"></i></button>
 
     <div class="tb-sep"></div>
 
@@ -75,8 +64,7 @@
     <button class="tb-btn tb-icon" id="btn-redo"  disabled title="Rehacer (Ctrl+Y)"><i data-lucide="redo-2"></i></button>
     <button class="tb-btn tb-icon" id="btn-calibrate" disabled title="Calibrar escala"><i data-lucide="ruler"></i></button>
     <span class="tb-scale-info" id="scale-info" title="Escala calibrada" style="display:none"></span>
-    <button class="tb-btn tb-icon tb-btn-danger" id="btn-clear"      disabled title="Limpiar página"><i data-lucide="trash-2"></i></button>
-    <button class="tb-btn tb-icon" id="btn-export-png" disabled title="Exportar PNG"><i data-lucide="image"></i></button>
+    <button class="tb-btn tb-icon tb-btn-danger" id="btn-clear"      disabled title="Eliminar mis marcas de esta página"><i data-lucide="trash-2"></i></button>
     <button class="tb-btn tb-icon" id="btn-compare" disabled title="Comparar revisión (overlay)"><i data-lucide="layers"></i></button>
     <div class="tb-sep"></div>
     <button class="tb-btn tb-icon" id="btn-toggle-panel"
@@ -86,25 +74,16 @@
     <div class="tb-sep"></div>
     <div class="tb-dropdown-wrap" id="users-wrap">
       <button class="tb-btn tb-dropdown-btn" id="btn-users"
-              title="Usuario actual · Filtrar anotaciones por autor">
+              title="Colaboradores en este plano">
         <span class="user-dot" id="user-dot"></span>
-        <span id="user-name-label">Anónimo</span>
+        <span id="user-name-label">—</span>
       </button>
       <div class="tb-dropdown" id="dropdown-users" style="min-width:230px">
 
-        <!-- Nombre de usuario -->
-        <div class="tb-drop-header">Anotar como</div>
-        <div class="users-identity">
-          <input type="text" id="user-input" placeholder="Tu nombre…" maxlength="50" autocomplete="off">
-          <button class="users-apply-btn" id="btn-set-user" title="Aplicar"><i data-lucide="check"></i></button>
-        </div>
-
-        <div class="tb-drop-sep"></div>
-
-        <!-- Lista de autores en el plano -->
-        <div class="tb-drop-header">Autores en este plano</div>
+        <!-- Lista de usuarios colaborando en el plano -->
+        <div class="tb-drop-header">Colaborando en este plano</div>
         <div id="authors-list">
-          <div class="author-empty">Abre un PDF para ver los autores</div>
+          <div class="author-empty">Abre un plano para ver los colaboradores</div>
         </div>
       </div>
     </div>
@@ -118,6 +97,7 @@
 
     <!-- ── Riel de herramientas (estilo Procore) ── -->
     <div class="tool-rail" id="tool-rail">
+      <div class="rail-drag" id="rail-drag" title="Arrastra para mover la barra"><i data-lucide="grip-horizontal"></i></div>
       <button class="tb-btn tb-tool tb-btn-active" data-tool="select" title="Seleccionar (V)"><i data-lucide="mouse-pointer-2"></i></button>
       <button class="tb-btn tb-tool"               data-tool="pan"    title="Mover vista (H)"><i data-lucide="hand"></i></button>
       <button class="tb-btn tb-tool"               data-tool="eraser" title="Borrador (E)"><i data-lucide="eraser"></i></button>
@@ -159,7 +139,7 @@
         </button>
         <div class="tb-dropdown" id="dropdown-measure">
           <div class="tb-drop-header">Requiere calibración de escala</div>
-          <button class="tb-drop-item tb-tool" data-tool="measure"><i data-lucide="ruler"></i> Cota lineal</button>
+          <button class="tb-drop-item tb-tool" data-tool="measure"><i data-lucide="move-horizontal"></i> Cota lineal</button>
           <button class="tb-drop-item tb-tool" data-tool="angle"><i data-lucide="triangle"></i> Ángulo (3 clics)</button>
           <button class="tb-drop-item tb-tool" data-tool="area"><i data-lucide="hexagon"></i> Área</button>
           <button class="tb-drop-item tb-tool" data-tool="perimeter"><i data-lucide="spline"></i> Perímetro</button>
@@ -200,6 +180,21 @@
 
     <!-- Hint modo dibujo -->
     <div class="draw-hint" id="draw-hint" style="display:none"></div>
+
+    <!-- Loader: cargando un plano desde el servidor (marca AICSA) -->
+    <div class="plano-loader" id="plano-loader" style="display:none">
+      <div class="plano-loader-box">
+        <div class="plano-brand">
+          <span class="pb-word" style="--i:0">Visor</span>
+          <span class="pb-word" style="--i:1">de</span>
+          <span class="pb-word" style="--i:2">Planos</span>
+          <span class="pb-saf" style="--i:3">SAF<i class="pb-dot"></i></span>
+        </div>
+        <div class="plano-bar"><span></span></div>
+        <div class="plano-loader-text" id="plano-loader-text">Cargando plano…</div>
+        <div class="plano-tag">Construyendo una Guatemala mejor</div>
+      </div>
+    </div>
   </div><!-- .saf-canvas -->
 
   </div><!-- .saf-main -->
@@ -324,6 +319,47 @@
   <img id="att-lightbox-img" alt="Adjunto">
 </div>
 
+<!-- Selector de plano destino para el hipervínculo -->
+<div class="modal-overlay" id="modal-plano" style="display:none">
+  <div class="modal-card plano-pick-card">
+    <div class="modal-head">
+      <span>🔗 Elegir plano destino</span>
+      <button class="ap-close" id="btn-plano-close" title="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <input type="text" id="plano-search" class="plano-search" placeholder="Buscar por número, descripción…" autocomplete="off">
+    <div class="plano-list" id="plano-list">
+      <div class="plano-empty">Cargando planos…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de confirmación (acciones destructivas) -->
+<div class="modal-overlay" id="modal-confirm" style="display:none">
+  <div class="modal-card confirm-card">
+    <div class="confirm-icon"><i data-lucide="alert-triangle"></i></div>
+    <div class="confirm-title" id="confirm-title">¿Confirmar?</div>
+    <div class="confirm-msg" id="confirm-msg"></div>
+    <div class="confirm-actions">
+      <button class="confirm-btn confirm-cancel" id="confirm-cancel">Cancelar</button>
+      <button class="confirm-btn confirm-ok confirm-danger" id="confirm-ok">Aceptar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Selector de RFI para el sello RFI (mismo estilo) -->
+<div class="modal-overlay" id="modal-rfi" style="display:none">
+  <div class="modal-card plano-pick-card">
+    <div class="modal-head">
+      <span>📋 Elegir RFI</span>
+      <button class="ap-close" id="btn-rfi-close" title="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+    <input type="text" id="rfi-search" class="plano-search" placeholder="Buscar RFI…" autocomplete="off">
+    <div class="plano-list" id="rfi-list">
+      <div class="plano-empty">Cargando RFIs…</div>
+    </div>
+  </div>
+</div>
+
 <!-- Mini-toolbar flotante sobre la figura seleccionada -->
 <div id="fig-toolbar" class="fig-toolbar" style="display:none">
   <button id="fig-toggle-att" title="Mostrar / ocultar el adjunto en el plano"></button>
@@ -348,17 +384,43 @@
     </div>
   </div>
 
+  <!-- Aviso de solo lectura (figura de otro usuario) -->
+  <div class="ap-readonly-banner" id="ap-readonly-banner" style="display:none">
+    <i data-lucide="lock"></i> Figura de otro usuario — solo lectura
+  </div>
+
   <!-- Cuerpo con scroll -->
   <div class="ap-body">
 
     <!-- ── Hipervínculo (solo para enlaces) ── -->
     <div class="ap-section" id="ap-link-section" style="display:none">
       <div class="ap-section-label">Hipervínculo</div>
+
+      <!-- Enlace a OTRO plano (lo elige APEX desde su listado) -->
       <div class="ap-field">
-        <label>Ir a la hoja N°</label>
-        <input type="number" id="ap-link-page" min="1" placeholder="Ej: 5">
+        <label>Plano destino</label>
+        <div class="ap-link-target">
+          <span id="ap-link-target-name" class="ap-link-target-name">— sin destino —</span>
+          <button class="ap-att-add" id="btn-ap-pick-plano"><i data-lucide="link"></i> Elegir plano…</button>
+          <button class="ap-link-clear" id="btn-ap-clear-plano" title="Quitar destino">✕</button>
+        </div>
       </div>
-      <div class="ap-link-hint">Doble clic en el enlace para saltar a esa hoja.</div>
+
+      <div class="ap-link-hint">Doble clic en el enlace para abrir el plano destino.</div>
+    </div>
+
+    <!-- ── RFI (solo para el sello RFI) ── -->
+    <div class="ap-section" id="ap-rfi-section" style="display:none">
+      <div class="ap-section-label">RFI vinculado</div>
+      <div class="ap-field">
+        <label>RFI</label>
+        <div class="ap-link-target">
+          <span id="ap-rfi-name" class="ap-link-target-name">— sin RFI —</span>
+          <button class="ap-att-add" id="btn-ap-pick-rfi"><i data-lucide="file-text"></i> Elegir RFI…</button>
+          <button class="ap-link-clear" id="btn-ap-clear-rfi" title="Quitar RFI">✕</button>
+        </div>
+      </div>
+      <div class="ap-link-hint">Al elegir un RFI se abre su detalle. Doble clic en el sello también lo abre.</div>
     </div>
 
     <!-- ── Adjuntos (fotos / archivos) — solo para el pin de cámara ── -->
@@ -404,12 +466,6 @@
     </div>
 
   </div><!-- .ap-body -->
-
-  <!-- Footer -->
-  <div class="ap-footer">
-    <button class="ap-btn ap-btn-save"   id="btn-ap-save">💾 Guardar</button>
-    <button class="ap-btn ap-btn-cancel" id="btn-ap-cancel">Cancelar</button>
-  </div>
 
 </div><!-- #annot-panel -->
 

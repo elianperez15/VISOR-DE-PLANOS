@@ -17,6 +17,11 @@
 const XFDF_NS = 'http://ns.adobe.com/xfdf/';
 const SAF_NS  = 'http://btsolution.com/saf/1.0';
 
+/** Altura por defecto de página en puntos PDF (tamaño carta) si no se conoce. */
+const DEFAULT_PAGE_HEIGHT_PTS = 792;
+
+interface PdfScale { pxPerUnit: number; unit: string; }
+
 export class XFDFConverter {
 
   /* ═══════════════════════════════════════════════════════════════
@@ -27,8 +32,13 @@ export class XFDFConverter {
      scale       : { pxPerUnit, unit } | null
      pageHeights : { "1": 792, "2": 792, ... }  (puntos lógicos por página)
      ═══════════════════════════════════════════════════════════════ */
-  static toXFDF(pages, docFilename, scale, pageHeights) {
-    const e = s => String(s ?? '')
+  static toXFDF(
+    pages: Record<string, string>,
+    docFilename: string,
+    scale: PdfScale | null,
+    pageHeights: Record<string, number>,
+  ): string {
+    const escapeXml = s => String(s ?? '')
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;');
 
@@ -40,23 +50,23 @@ export class XFDFConverter {
       try { objects = JSON.parse(jsonStr); } catch { continue; }
       if (!Array.isArray(objects) || !objects.length) continue;
 
-      const pageH = parseFloat(pageHeights[pageNum] || 792);
+      const pageH = parseFloat(String(pageHeights[pageNum] || DEFAULT_PAGE_HEIGHT_PTS));
       const page  = parseInt(pageNum, 10) - 1; // XFDF usa índice 0
 
       for (const obj of objects) {
-        annots += this._objToXFDF(obj, page, pageH, e);
+        annots += this._objToXFDF(obj, page, pageH, escapeXml);
       }
     }
 
     const scaleAttr = scale
-      ? `\n     saf:scale-px="${scale.pxPerUnit}" saf:scale-unit="${e(scale.unit)}"` : '';
+      ? `\n     saf:scale-px="${scale.pxPerUnit}" saf:scale-unit="${escapeXml(scale.unit)}"` : '';
 
     return [
       '<?xml version="1.0" encoding="UTF-8"?>',
       `<xfdf xmlns="${XFDF_NS}"`,
       `      xmlns:saf="${SAF_NS}"`,
       `      xml:space="preserve"${scaleAttr}>`,
-      `  <f href="${e(docFilename)}"/>`,
+      `  <f href="${escapeXml(docFilename)}"/>`,
       `  <annots>`,
       annots.trimEnd(),
       `  </annots>`,
@@ -69,7 +79,7 @@ export class XFDFConverter {
 
      Retorna: { pages: { "1": [plainFabricObj,...] }, scale: {...}|null }
      ═══════════════════════════════════════════════════════════════ */
-  static fromXFDF(xfdfStr, pageHeights) {
+  static fromXFDF(xfdfStr: string, pageHeights: Record<string, number>) {
     const parser = new DOMParser();
     const doc    = parser.parseFromString(xfdfStr, 'text/xml');
     if (doc.querySelector('parsererror')) {
@@ -92,7 +102,7 @@ export class XFDFConverter {
 
     for (const el of Array.from(annotsEl.children)) {
       const page  = parseInt(el.getAttribute('page') || '0', 10) + 1; // → 1-indexed
-      const pageH = parseFloat(pageHeights[page] || 792);
+      const pageH = parseFloat(String(pageHeights[page] || DEFAULT_PAGE_HEIGHT_PTS));
 
       if (!pages[page]) pages[page] = [];
       const obj = this._xfdfElToFabric(el, pageH);
@@ -107,7 +117,7 @@ export class XFDFConverter {
      ═══════════════════════════════════════════════════════════════ */
 
   /** Descarga un string XFDF como archivo .xfdf */
-  static downloadXFDF(xfdfStr, filename) {
+  static downloadXFDF(xfdfStr: string, filename?: string) {
     const blob = new Blob([xfdfStr], { type: 'application/vnd.adobe.xfdf' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -116,12 +126,12 @@ export class XFDFConverter {
   }
 
   /** Lee un archivo .xfdf / .xml del disco */
-  static readFile(file) {
-    return new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload  = e => res(e.target.result);
-      r.onerror = () => rej(new Error('Error al leer archivo XFDF'));
-      r.readAsText(file, 'UTF-8');
+  static readFile(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = event => resolve(event.target?.result as string);
+      reader.onerror = () => reject(new Error('Error al leer archivo XFDF'));
+      reader.readAsText(file, 'UTF-8');
     });
   }
 
@@ -129,9 +139,9 @@ export class XFDFConverter {
      PRIVADO: Fabric → XFDF
      ═══════════════════════════════════════════════════════════════ */
 
-  static _objToXFDF(obj, page, pageH, e) {
+  static _objToXFDF(obj, page, pageH, escapeXml) {
     const id   = (obj.name || 'saf-' + Math.random().toString(36).slice(2,9));
-    const j64  = this._b64(JSON.stringify(obj));          // round-trip exacto
+    const jsonBase64  = this._b64(JSON.stringify(obj));          // round-trip exacto
     const type = obj.data?.type || obj.type || '';
     const c    = this._hex(obj.stroke);
     const ic   = this._hex(obj.fill);
@@ -143,14 +153,14 @@ export class XFDFConverter {
       /* ── Rectángulo / Highlight ──────────────────────────────── */
       case 'rect': {
         const r = this._rect(obj.left, obj.top, obj.width*(obj.scaleX||1), obj.height*(obj.scaleY||1), pageH);
-        return `    <square page="${page}" name="${e(id)}" rect="${r}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" saf:type="${e(type)}" saf:j="${j64}"/>\n`;
+        return `    <square page="${page}" name="${escapeXml(id)}" rect="${r}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" saf:type="${escapeXml(type)}" saf:j="${jsonBase64}"/>\n`;
       }
 
       /* ── Elipse / Círculo ──────────────────────────────────────── */
       case 'ellipse': {
         const rw = (obj.rx||50)*2*(obj.scaleX||1), rh = (obj.ry||50)*2*(obj.scaleY||1);
         const r = this._rect(obj.left, obj.top, rw, rh, pageH);
-        return `    <circle page="${page}" name="${e(id)}" rect="${r}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" saf:type="ellipse" saf:j="${j64}"/>\n`;
+        return `    <circle page="${page}" name="${escapeXml(id)}" rect="${r}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" saf:type="ellipse" saf:j="${jsonBase64}"/>\n`;
       }
 
       /* ── Polígono (área, nube-aprox) ──────────────────────────── */
@@ -159,8 +169,8 @@ export class XFDFConverter {
         const bbox = this._polyBBox(obj.points||[], pageH);
         const areaLabel = obj.data?.areaLabel || '';
         const cloudEffect = type === 'cloud' ? ' border-effect="C" border-effect-intensity="2"' : '';
-        const contents = areaLabel ? `\n      <contents>${e(areaLabel)}</contents>` : '';
-        return `    <polygon page="${page}" name="${e(id)}" rect="${bbox}" vertices="${pts}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}"${cloudEffect} saf:type="${e(type)}" saf:j="${j64}">${contents}\n    </polygon>\n`;
+        const contents = areaLabel ? `\n      <contents>${escapeXml(areaLabel)}</contents>` : '';
+        return `    <polygon page="${page}" name="${escapeXml(id)}" rect="${bbox}" vertices="${pts}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}"${cloudEffect} saf:type="${escapeXml(type)}" saf:j="${jsonBase64}">${contents}\n    </polygon>\n`;
       }
 
       /* ── Polilínea (perímetro) ─────────────────────────────────── */
@@ -168,7 +178,7 @@ export class XFDFConverter {
         const pts  = (obj.points||[]).map(p => `${this._n(p.x)},${this._n(pageH-p.y)}`).join(';');
         const bbox = this._polyBBox(obj.points||[], pageH);
         const lbl  = obj.data?.label || '';
-        return `    <polyline page="${page}" name="${e(id)}" rect="${bbox}" vertices="${pts}" color="${c}" opacity="${op}" width="${w}" saf:type="${e(type)}" saf:j="${j64}">\n      <contents>${e(lbl)}</contents>\n    </polyline>\n`;
+        return `    <polyline page="${page}" name="${escapeXml(id)}" rect="${bbox}" vertices="${pts}" color="${c}" opacity="${op}" width="${w}" saf:type="${escapeXml(type)}" saf:j="${jsonBase64}">\n      <contents>${escapeXml(lbl)}</contents>\n    </polyline>\n`;
       }
 
       /* ── Path: nube de revisión o dibujo libre ─────────────────── */
@@ -178,7 +188,7 @@ export class XFDFConverter {
           if (rawPts.length >= 2) {
             const pts  = rawPts.map(p => `${this._n(p.x)},${this._n(pageH-p.y)}`).join(';');
             const bbox = this._polyBBox(rawPts, pageH);
-            return `    <polygon page="${page}" name="${e(id)}" rect="${bbox}" vertices="${pts}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" border-effect="C" border-effect-intensity="2" saf:type="cloud" saf:j="${j64}">\n      <contents>Nube de revisión</contents>\n    </polygon>\n`;
+            return `    <polygon page="${page}" name="${escapeXml(id)}" rect="${bbox}" vertices="${pts}" color="${c}" interior-color="${ic}" opacity="${op}" width="${w}" border-effect="C" border-effect-intensity="2" saf:type="cloud" saf:j="${jsonBase64}">\n      <contents>Nube de revisión</contents>\n    </polygon>\n`;
           }
         }
         // Dibujo libre → <ink>
@@ -186,7 +196,7 @@ export class XFDFConverter {
         if (!inkPts.length) return '';
         const bbox    = this._inkBBox(inkPts);
         const gesture = inkPts.map(p => `${this._n(p.x)},${this._n(p.y)}`).join(';');
-        return `    <ink page="${page}" name="${e(id)}" rect="${bbox}" color="${c}" width="${w}" opacity="${op}" saf:type="freehand" saf:j="${j64}">\n      <inklist>\n        <gesture>${gesture}</gesture>\n      </inklist>\n    </ink>\n`;
+        return `    <ink page="${page}" name="${escapeXml(id)}" rect="${bbox}" color="${c}" width="${w}" opacity="${op}" saf:type="freehand" saf:j="${jsonBase64}">\n      <inklist>\n        <gesture>${gesture}</gesture>\n      </inklist>\n    </ink>\n`;
       }
 
       /* ── Texto (IText, Text, Textbox) ──────────────────────────── */
@@ -198,18 +208,18 @@ export class XFDFConverter {
         const r  = this._rect(obj.left, obj.top, tw, th, pageH);
         const fs = obj.fontSize||14;
         const rgb= this._hexToRgbFloat(obj.fill||'#000');
-        return `    <freetext page="${page}" name="${e(id)}" rect="${r}" color="${this._hex(obj.fill)}" interior-color="#1C2130" opacity="1" width="0" saf:type="${e(type||'text')}" saf:j="${j64}">\n      <contents>${e(obj.text||'')}</contents>\n      <defaultappearance>/Helvetica ${fs} Tf ${rgb} rg</defaultappearance>\n    </freetext>\n`;
+        return `    <freetext page="${page}" name="${escapeXml(id)}" rect="${r}" color="${this._hex(obj.fill)}" interior-color="#1C2130" opacity="1" width="0" saf:type="${escapeXml(type||'text')}" saf:j="${jsonBase64}">\n      <contents>${escapeXml(obj.text||'')}</contents>\n      <defaultappearance>/Helvetica ${fs} Tf ${rgb} rg</defaultappearance>\n    </freetext>\n`;
       }
 
       /* ── Group (flecha, cota, sello, nota, ángulo, callout) ────── */
       case 'group':
-        return this._groupToXFDF(obj, page, pageH, e, id, j64, type);
+        return this._groupToXFDF(obj, page, pageH, escapeXml, id, jsonBase64, type);
 
       default: return '';
     }
   }
 
-  static _groupToXFDF(obj, page, pageH, e, id, j64, type) {
+  static _groupToXFDF(obj, page, pageH, escapeXml, id, jsonBase64, type) {
     const bbox = this._groupBBox(obj, pageH);
     const c    = this._hex(this._groupProp(obj,'stroke','#ef4444'));
     const w    = obj.strokeWidth || this._groupProp(obj,'strokeWidth',2);
@@ -221,7 +231,7 @@ export class XFDFConverter {
         if (!line) break;
         const {x1,y1,x2,y2} = this._lineAbsPts(line, obj);
         const l = `${this._n(x1)},${this._n(pageH-y1)},${this._n(x2)},${this._n(pageH-y2)}`;
-        return `    <line page="${page}" name="${e(id)}" rect="${bbox}" l="${l}" color="${c}" width="${w}" head="ClosedArrow" tail="None" saf:type="arrow" saf:j="${j64}"/>\n`;
+        return `    <line page="${page}" name="${escapeXml(id)}" rect="${bbox}" l="${l}" color="${c}" width="${w}" head="ClosedArrow" tail="None" saf:type="arrow" saf:j="${jsonBase64}"/>\n`;
       }
 
       case 'dimension': {
@@ -231,28 +241,28 @@ export class XFDFConverter {
         if (!line) break;
         const {x1,y1,x2,y2} = this._lineAbsPts(line, obj);
         const l = `${this._n(x1)},${this._n(pageH-y1)},${this._n(x2)},${this._n(pageH-y2)}`;
-        return `    <line page="${page}" name="${e(id)}" rect="${bbox}" l="${l}" color="${c}" width="1" head="OpenArrow" tail="OpenArrow" saf:type="dimension" saf:measure-value="${e(val)}" saf:measure-unit="${e(unit)}" saf:j="${j64}">\n      <contents>${e(label)}</contents>\n    </line>\n`;
+        return `    <line page="${page}" name="${escapeXml(id)}" rect="${bbox}" l="${l}" color="${c}" width="1" head="OpenArrow" tail="OpenArrow" saf:type="dimension" saf:measure-value="${escapeXml(val)}" saf:measure-unit="${escapeXml(unit)}" saf:j="${jsonBase64}">\n      <contents>${escapeXml(label)}</contents>\n    </line>\n`;
       }
 
       case 'stamp': {
         const lbl      = obj.data?.label || 'STAMP';
         const std      = this._stdStamp(lbl);
-        return `    <stamp page="${page}" name="${e(id)}" rect="${bbox}" name="${std}" color="${c}" opacity="0.9" saf:type="stamp" saf:label="${e(lbl)}" saf:j="${j64}"/>\n`;
+        return `    <stamp page="${page}" name="${escapeXml(id)}" rect="${bbox}" name="${std}" color="${c}" opacity="0.9" saf:type="stamp" saf:label="${escapeXml(lbl)}" saf:j="${jsonBase64}"/>\n`;
       }
 
       case 'note':
       case 'callout': {
         const txt = this._findInGroup(obj,'i-text') || this._findInGroup(obj,'text');
-        return `    <text page="${page}" name="${e(id)}" rect="${bbox}" color="${c}" saf:type="${type}" saf:j="${j64}">\n      <contents>${e(txt?.text||'')}</contents>\n    </text>\n`;
+        return `    <text page="${page}" name="${escapeXml(id)}" rect="${bbox}" color="${c}" saf:type="${type}" saf:j="${jsonBase64}">\n      <contents>${escapeXml(txt?.text||'')}</contents>\n    </text>\n`;
       }
 
       case 'angle': {
         const lbl = obj.data?.label || '';
-        return `    <square page="${page}" name="${e(id)}" rect="${bbox}" color="${c}" width="1" saf:type="angle" saf:angle="${e(lbl)}" saf:j="${j64}">\n      <contents>${e(lbl)}</contents>\n    </square>\n`;
+        return `    <square page="${page}" name="${escapeXml(id)}" rect="${bbox}" color="${c}" width="1" saf:type="angle" saf:angle="${escapeXml(lbl)}" saf:j="${jsonBase64}">\n      <contents>${escapeXml(lbl)}</contents>\n    </square>\n`;
       }
 
       default:
-        return `    <square page="${page}" name="${e(id)}" rect="${bbox}" color="${c}" width="1" saf:type="${e(type)}" saf:j="${j64}"/>\n`;
+        return `    <square page="${page}" name="${escapeXml(id)}" rect="${bbox}" color="${c}" width="1" saf:type="${escapeXml(type)}" saf:j="${jsonBase64}"/>\n`;
     }
     return '';
   }
@@ -263,9 +273,9 @@ export class XFDFConverter {
 
   static _xfdfElToFabric(el, pageH) {
     // Prioridad 1: round-trip exacto desde saf:j
-    const j64 = el.getAttributeNS(SAF_NS,'j') || el.getAttribute('saf:j');
-    if (j64) {
-      try { return JSON.parse(this._fromb64(j64)); } catch { /* fallback */ }
+    const jsonBase64 = el.getAttributeNS(SAF_NS,'j') || el.getAttribute('saf:j');
+    if (jsonBase64) {
+      try { return JSON.parse(this._fromb64(jsonBase64)); } catch { /* fallback */ }
     }
 
     // Prioridad 2: reconstruir desde atributos XFDF estándar
@@ -364,8 +374,8 @@ export class XFDFConverter {
 
   /** BBox de puntos ink (ya en PDF Y-up) → string XFDF */
   static _inkBBox(pts) {
-    const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y), PAD=4;
-    return `${this._n(Math.min(...xs)-PAD)},${this._n(Math.min(...ys)-PAD)},${this._n(Math.max(...xs)+PAD)},${this._n(Math.max(...ys)+PAD)}`;
+    const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y), INK_BBOX_PADDING=4;
+    return `${this._n(Math.min(...xs)-INK_BBOX_PADDING)},${this._n(Math.min(...ys)-INK_BBOX_PADDING)},${this._n(Math.max(...xs)+INK_BBOX_PADDING)},${this._n(Math.max(...ys)+INK_BBOX_PADDING)}`;
   }
 
   /** BBox aproximado de un Group */

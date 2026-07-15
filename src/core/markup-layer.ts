@@ -10,6 +10,10 @@
 import { fabric } from 'fabric';
 import { ScaleManager } from './scale-manager';
 
+// Límites de zoom del lienzo (multiplicador absoluto sobre el tamaño lógico)
+const MIN_ZOOM = 0.04;
+const MAX_ZOOM = 20;
+
 // El backend WebGL de filtros tiene un límite de textura (~2048 px): en imágenes
 // grandes el filtro (p.ej. el tinte rojo del overlay) solo se aplica a la esquina
 // superior izquierda. El backend 2D procesa la imagen completa sin ese límite.
@@ -43,6 +47,7 @@ export class MarkupLayer {
     this._tempPoly     = null;
     this._mouseStart   = null;
     this._lastClick    = 0;    // ms del último mousedown (detección dbl-clic)
+    this._lastRightClick = 0;  // ms del último clic derecho (doble clic derecho = zoom out)
     this._isPanning    = false;
     this._panStart     = null;
     this._spaceDown    = false;  // barra espaciadora mantenida → pan temporal
@@ -78,9 +83,20 @@ export class MarkupLayer {
     this.onAnnotClick  = null;  // (fabricObj|null) => void — al seleccionar/deseleccionar
     this.onFollowLink  = null;  // (targetPage:number) => void — doble clic en hipervínculo
     this.onShowImage   = null;  // (dataUrl:string) => void — clic en miniatura de adjunto
+    this.onStampDblClick = null;// (data, obj) => void — doble clic en un sello (p.ej. RFI)
+    this.onLocalChange = null;  // () => void — el usuario local cambió SU capa (debounced)
+
+    // ── Colaboración en tiempo real ────────────────────────────────────
+    this._applyingRemote = false;  // true mientras se pinta una capa remota (no re-emitir)
+    this._collabTimer    = null;   // debounce de onLocalChange
+    this._peerCursors    = new Map(); // id → fabric objeto del cursor remoto
+    this._lastCursorZoom = 1;      // último zoom aplicado a los cursores remotos
 
     // ── Usuario actual ─────────────────────────────────────────────────
     this.currentUser = 'Anónimo';
+
+    // ── Autores ocultos (filtro del panel de colaboradores) ────────────
+    this._hiddenAuthors = new Set();   // nombres cuyos markups están ocultos
 
     this._init();
   }
@@ -143,13 +159,38 @@ export class MarkupLayer {
     });
   }
 
+  /**
+   * Rota 90° todas las marcas (sin el fondo), en el espacio lógico de la página.
+   * Debe llamarse ANTES de re-renderizar el fondo con la nueva orientación
+   * (setBackground), pues usa el ancho/alto lógicos actuales (previos).
+   * Transformación rígida por objeto (independiente del tipo):
+   *   horario   (x,y) → (altoPrevio − y, x)   y angle += 90
+   *   antihorario (x,y) → (y, anchoPrevio − x) y angle −= 90
+   * @param {boolean} clockwise  true = derecha (horario), false = izquierda
+   */
+  rotateContent(clockwise = true) {
+    const previousWidth  = this._pdfW;
+    const previousHeight = this._pdfH;
+    this.canvas.getObjects()
+      .filter(obj => !obj.isBackground)
+      .forEach(obj => {
+        const newLeft = clockwise ? previousHeight - obj.top : obj.top;
+        const newTop  = clockwise ? obj.left : previousWidth - obj.left;
+        obj.set({ left: newLeft, top: newTop, angle: (obj.angle || 0) + (clockwise ? 90 : -90) });
+        obj.setCoords();
+      });
+    this.canvas.discardActiveObject();
+    this.canvas.requestRenderAll();
+  }
+
   _fitToCanvas() {
-    const cw = this.canvas.width, ch = this.canvas.height;
-    const zoom = Math.min(cw / this._pdfW, ch / this._pdfH) * 0.92;
+    const FIT_SCALE = 0.92;   // deja un pequeño margen alrededor de la página
+    const canvasWidth = this.canvas.width, canvasHeight = this.canvas.height;
+    const zoom = Math.min(canvasWidth / this._pdfW, canvasHeight / this._pdfH) * FIT_SCALE;
     this.canvas.setViewportTransform([
       zoom, 0, 0, zoom,
-      (cw - this._pdfW * zoom) / 2,
-      (ch - this._pdfH * zoom) / 2,
+      (canvasWidth - this._pdfW * zoom) / 2,
+      (canvasHeight - this._pdfH * zoom) / 2,
     ]);
     this.onZoomChange && this.onZoomChange(zoom);
     this._scheduleDetail();
@@ -164,15 +205,15 @@ export class MarkupLayer {
   /** Rectángulo visible del plano en coordenadas LÓGICAS (puntos PDF) */
   _visibleLogicalRect() {
     const vt = this.canvas.viewportTransform;
-    const z  = vt[0] || 1;
-    const cw = this.canvas.getWidth(), ch = this.canvas.getHeight();
-    let x1 = (0  - vt[4]) / z, y1 = (0  - vt[5]) / z;
-    let x2 = (cw - vt[4]) / z, y2 = (ch - vt[5]) / z;
+    const zoom = vt[0] || 1;
+    const canvasWidth = this.canvas.getWidth(), canvasHeight = this.canvas.getHeight();
+    let x1 = (0  - vt[4]) / zoom, y1 = (0  - vt[5]) / zoom;
+    let x2 = (canvasWidth - vt[4]) / zoom, y2 = (canvasHeight - vt[5]) / zoom;
     x1 = Math.max(0, Math.min(x1, this._pdfW));
     y1 = Math.max(0, Math.min(y1, this._pdfH));
     x2 = Math.max(0, Math.min(x2, this._pdfW));
     y2 = Math.max(0, Math.min(y2, this._pdfH));
-    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1, zoom: z };
+    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1, zoom };
   }
 
   _clearDetail() {
@@ -183,9 +224,10 @@ export class MarkupLayer {
 
   /** Programa un refresco del tile de detalle (debounce tras zoom/pan) */
   _scheduleDetail() {
+    const DETAIL_DEBOUNCE_MS = 180;
     if (!this.requestRegion || !this._bgImage) return;
     if (this._detailTimer) clearTimeout(this._detailTimer);
-    this._detailTimer = setTimeout(() => this._refreshDetail(), 180);
+    this._detailTimer = setTimeout(() => this._refreshDetail(), DETAIL_DEBOUNCE_MS);
   }
 
   async _refreshDetail() {
@@ -195,15 +237,16 @@ export class MarkupLayer {
     if (rect.w <= 0 || rect.h <= 0) return;
 
     const density = rect.zoom * dpr;  // px de pantalla por unidad lógica
+    const BASE_RESOLUTION_MARGIN = 1.05;   // tolerancia antes de pedir un tile de detalle
     // Si el fondo base ya tiene resolución suficiente para este zoom, no hace falta detalle
-    if (density <= this._baseSS * 1.05) { this._clearDetail(); return; }
+    if (density <= this._baseSS * BASE_RESOLUTION_MARGIN) { this._clearDetail(); return; }
 
     const reqId = ++this._detailReqId;
     let res;
     try {
       res = await this.requestRegion({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, density);
-    } catch (e) {
-      console.error('refreshDetail:', e);
+    } catch (err) {
+      console.error('refreshDetail:', err);
       return;
     }
     // Descartar si el viewport ya cambió (otro refresh ganó la carrera)
@@ -272,8 +315,8 @@ export class MarkupLayer {
     if (this._cmpImg) { this.canvas.remove(this._cmpImg); this._cmpImg = null; this.canvas.renderAll(); }
   }
 
-  setCompareOpacity(o) {
-    if (this._cmpImg) { this._cmpImg.set('opacity', o); this.canvas.renderAll(); }
+  setCompareOpacity(opacity) {
+    if (this._cmpImg) { this._cmpImg.set('opacity', opacity); this.canvas.renderAll(); }
   }
 
   hasCompareOverlay() { return !!this._cmpImg; }
@@ -294,9 +337,9 @@ export class MarkupLayer {
     this.canvas.selection     = isSelect;
 
     if (isFreehand) {
-      const b = new fabric.PencilBrush(this.canvas);
-      b.color = this.strokeColor; b.width = this.strokeWidth;
-      this.canvas.freeDrawingBrush = b;
+      const brush = new fabric.PencilBrush(this.canvas);
+      brush.color = this.strokeColor; brush.width = this.strokeWidth;
+      this.canvas.freeDrawingBrush = brush;
     }
 
     const cursor = isSelect ? 'default'
@@ -309,14 +352,14 @@ export class MarkupLayer {
     this.canvas.renderAll();
   }
 
-  setStrokeColor(c) {
-    this.strokeColor = c;
+  setStrokeColor(color) {
+    this.strokeColor = color;
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush)
-      this.canvas.freeDrawingBrush.color = c;
+      this.canvas.freeDrawingBrush.color = color;
   }
-  setFillColor(c)   { this.fillColor   = c; }
-  setStrokeWidth(w) {
-    this.strokeWidth = parseInt(w,10) || 2;
+  setFillColor(color)   { this.fillColor   = color; }
+  setStrokeWidth(width) {
+    this.strokeWidth = parseInt(width,10) || 2;
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush)
       this.canvas.freeDrawingBrush.width = this.strokeWidth;
   }
@@ -326,26 +369,58 @@ export class MarkupLayer {
      ════════════════════════════════════════════════════════════════════ */
   _bindCanvasEvents() {
     this.canvas.on('mouse:wheel',  e => this._onWheel(e));
+
+    // Mantener los cursores remotos a tamaño constante al cambiar el zoom
+    this.canvas.on('after:render', () => {
+      if (!this._peerCursors.size) return;
+      const zoom = this.canvas.getZoom() || 1;
+      if (zoom === this._lastCursorZoom) return;
+      this._lastCursorZoom = zoom;
+      this._peerCursors.forEach(cursor => { cursor.scaleX = cursor.scaleY = 1 / zoom; cursor.setCoords(); });
+    });
     this.canvas.on('mouse:down',   e => this._onDown(e));
     this.canvas.on('mouse:move',   e => this._onMove(e));
     this.canvas.on('mouse:up',     e => this._onUp(e));
 
-    // Doble clic en el plano → acercar (Alt = alejar) hacia el punto
+    // Doble clic IZQUIERDO en el plano → acercar (zoom in) hacia el punto
     this.canvas.on('mouse:dblclick', opt => {
       if (this._isDrawing) return;
       if (opt.target && !opt.target.isBackground) return;  // no interferir con objetos/texto
       this._zoomBy(opt.e.altKey ? 0.5 : 2, opt.e.offsetX, opt.e.offsetY);
     });
 
-    // Snapshot para undo/redo
-    const snap = e => { if (!e.target?.isBackground && !this._skipSnap) this._snapshot(); };
+    // Doble clic DERECHO en el plano → alejar (zoom out) hacia el punto.
+    // Se detecta por dos contextmenu seguidos (sin menú del navegador).
+    const RIGHT_DBL_CLICK_MS = 400;   // ventana para detectar doble clic derecho
+    this.canvas.upperCanvasEl.addEventListener('contextmenu', domEvent => {
+      domEvent.preventDefault();
+      if (this._isDrawing) { this._lastRightClick = 0; return; }
+      const now = Date.now();
+      if (now - this._lastRightClick < RIGHT_DBL_CLICK_MS) {
+        this._zoomBy(0.5, domEvent.offsetX, domEvent.offsetY);
+        this._lastRightClick = 0;
+      } else {
+        this._lastRightClick = now;
+      }
+    });
+
+    // Snapshot para undo/redo + aviso de cambio local para colaboración
+    const snap = evt => {
+      if (evt.target?.isBackground || evt.target?.isCursor || this._skipSnap) return;
+      this._snapshot();
+      this._notifyLocalChange();
+    };
     this.canvas.on('object:added',    snap);
     this.canvas.on('object:modified', snap);
     this.canvas.on('object:removed',  snap);
+    // Al borrar una figura no se dispara mouse:out → el tooltip de autor quedaría
+    // flotando. Lo ocultamos explícitamente cuando desaparece cualquier objeto.
+    this.canvas.on('object:removed', () => { this.onAnnotHover && this.onAnnotHover(null, null); });
     this.canvas.on('path:created',    opt => {
       if (opt.path) {
         opt.path.data = { type:'freehand', autor:this.currentUser, fecha:new Date().toISOString() };
         this._snapshot();
+        this._notifyLocalChange();
       }
     });
 
@@ -382,8 +457,16 @@ export class MarkupLayer {
     this.canvas.on('mouse:dblclick', opt => {
       const obj = opt.target;
       if (!obj || obj.isBackground) return;
-      if (obj.data?.type === 'link')             this.onFollowLink && this.onFollowLink(obj.data.targetPage);
-      else if (obj.data?.type === 'photo-pin')   { const a = this._firstImageAttachment(obj); if (a) this.onShowImage && this.onShowImage(a.dataUrl); }
+      // Figura de otro usuario: solo navegación/visualización, nunca edición
+      if (obj.data?.remoto) {
+        if (obj.data?.type === 'link')           this.onFollowLink && this.onFollowLink(obj.data);
+        else if (obj.data?.type === 'photo-pin') { const attachment = this._firstImageAttachment(obj); if (attachment) this.onShowImage && this.onShowImage(attachment.dataUrl); }
+        else if (obj.data?.type === 'stamp')     this.onStampDblClick && this.onStampDblClick(obj.data, obj);
+        return;
+      }
+      if (obj.data?.type === 'link')             this.onFollowLink && this.onFollowLink(obj.data);
+      else if (obj.data?.type === 'photo-pin')   { const attachment = this._firstImageAttachment(obj); if (attachment) this.onShowImage && this.onShowImage(attachment.dataUrl); }
+      else if (obj.data?.type === 'stamp')       this.onStampDblClick && this.onStampDblClick(obj.data, obj);
       else if (obj.data?.type === 'cloud')       this._editCloudLabel(obj);
       else if (this._isLabelable(obj))           this._editLabel(obj);
     });
@@ -402,36 +485,40 @@ export class MarkupLayer {
 
   /* ── Rueda / trackpad: zoom o pan según el gesto (inteligente) ────── */
   _onWheel(opt) {
-    const e = opt.e;
-    e.preventDefault(); e.stopPropagation();
+    const WHEEL_ZOOM_SENSITIVITY = 0.0015;   // factor exponencial del zoom por delta de rueda
+    const MOUSE_WHEEL_MIN_DELTA  = 40;        // umbral para distinguir rueda de mouse vs trackpad
+    const domEvent = opt.e;
+    domEvent.preventDefault(); domEvent.stopPropagation();
 
     // Pinza del trackpad o Ctrl/Cmd + rueda → ZOOM hacia el cursor
-    const zoomGesture = e.ctrlKey || e.metaKey;
+    const zoomGesture = domEvent.ctrlKey || domEvent.metaKey;
     // Heurística mouse vs trackpad: la rueda de mouse llega en pasos grandes,
     // enteros y sin componente horizontal; el trackpad manda deltas finos/diagonales.
-    const mouseWheel = !zoomGesture && e.deltaX === 0 &&
-                       Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 40;
+    const mouseWheel = !zoomGesture && domEvent.deltaX === 0 &&
+                       Number.isInteger(domEvent.deltaY) && Math.abs(domEvent.deltaY) >= MOUSE_WHEEL_MIN_DELTA;
 
     if (zoomGesture || mouseWheel) {
-      this._zoomBy(Math.exp(-e.deltaY * 0.0015), e.offsetX, e.offsetY);
+      this._zoomBy(Math.exp(-domEvent.deltaY * WHEEL_ZOOM_SENSITIVITY), domEvent.offsetX, domEvent.offsetY);
     } else {
       // Trackpad de dos dedos → DESPLAZAR el plano
-      this.canvas.relativePan({ x: -e.deltaX, y: -e.deltaY });
+      this.canvas.relativePan({ x: -domEvent.deltaX, y: -domEvent.deltaY });
       this._scheduleDetail();
     }
   }
 
   /** Zoom multiplicativo acotado, centrado en el punto (x,y) del canvas */
   _zoomBy(factor, x, y) {
-    let z = this.canvas.getZoom() * factor;
-    z = Math.min(Math.max(z, 0.04), 20);
-    this.canvas.zoomToPoint({ x, y }, z);
-    this.onZoomChange && this.onZoomChange(z);
+    let zoom = this.canvas.getZoom() * factor;
+    zoom = Math.min(Math.max(zoom, MIN_ZOOM), MAX_ZOOM);
+    this.canvas.zoomToPoint({ x, y }, zoom);
+    this.onZoomChange && this.onZoomChange(zoom);
     this._scheduleDetail();
   }
 
   /* ── Mouse down ───────────────────────────────────────────────────── */
   _onDown(opt) {
+    // Clic derecho: reservado para el doble-clic-derecho de zoom out (no dibuja)
+    if (opt.e && opt.e.button === 2) return;
     const ptr  = this.canvas.getPointer(opt.e);
     const tool = this.currentTool;
 
@@ -443,12 +530,16 @@ export class MarkupLayer {
 
     // Eraser: borrar objeto bajo cursor
     if (tool === 'eraser') {
-      const tgt = opt.target;
-      if (tgt && !tgt.isBackground) {
+      const target = opt.target;
+      if (target && target.data?.remoto) {
+        this._hint && this._hint('Esta figura es de otro usuario — no puedes borrarla');
+        return;
+      }
+      if (target && !target.isBackground) {
         // Eliminar también su etiqueta de texto enlazada
-        if (tgt.data?.type === 'cloud' && tgt.data?.cloudId) this._removeCloudLabel(tgt.data.cloudId);
-        if (tgt.data?.labelId) { this._removeLabel(tgt.data.labelId); this._removeThumb(tgt.data.labelId); }
-        this.canvas.remove(tgt);
+        if (target.data?.type === 'cloud' && target.data?.cloudId) this._removeCloudLabel(target.data.cloudId);
+        if (target.data?.labelId) { this._removeLabel(target.data.labelId); this._removeThumb(target.data.labelId); }
+        this.canvas.remove(target);
         this.canvas.discardActiveObject();
         this.canvas.renderAll();
       }
@@ -468,8 +559,9 @@ export class MarkupLayer {
     opt.e.preventDefault();
 
     // Detección de doble-clic manual
+    const DOUBLE_CLICK_MS = 360;
     const now  = Date.now();
-    const isDbl = now - this._lastClick < 360;
+    const isDbl = now - this._lastClick < DOUBLE_CLICK_MS;
     this._lastClick = now;
 
     switch (tool) {
@@ -573,9 +665,10 @@ export class MarkupLayer {
     const start = this._mouseStart;
     if (!start) return;
 
+    const DRAG_THRESHOLD_PX = 5;   // distancia mínima para tratar el gesto como arrastre
     const dist = Math.hypot(ptr.x-start.x, ptr.y-start.y);
 
-    if (dist >= 5) {
+    if (dist >= DRAG_THRESHOLD_PX) {
       // Fue un arrastre → colocar la figura entre los dos extremos
       this._removeTempLine();
       this._isDrawing = false;
@@ -620,22 +713,23 @@ export class MarkupLayer {
       strokeDashArray: [6,4], fill: 'transparent',
       selectable: false, evented: false, opacity: 0.85,
     };
-    const L = Math.min(start.x,end.x), T = Math.min(start.y,end.y);
-    const W = Math.abs(end.x-start.x), Hh = Math.abs(end.y-start.y);
-    let g;
+    const left = Math.min(start.x,end.x), top = Math.min(start.y,end.y);
+    const width = Math.abs(end.x-start.x), height = Math.abs(end.y-start.y);
+    const MIN_CLOUD_PREVIEW_PX = 4;   // bajo este tamaño se previsualiza como rectángulo
+    let shape;
     if (tool === 'arrow' || tool === 'measure') {
-      g = new fabric.Line([start.x,start.y,end.x,end.y], base);
+      shape = new fabric.Line([start.x,start.y,end.x,end.y], base);
     } else if (tool === 'ellipse') {
-      g = new fabric.Ellipse(Object.assign({ left:L, top:T, rx:W/2, ry:Hh/2 }, base));
-    } else if (tool === 'cloud' && W > 4 && Hh > 4) {
+      shape = new fabric.Ellipse(Object.assign({ left, top, rx:width/2, ry:height/2 }, base));
+    } else if (tool === 'cloud' && width > MIN_CLOUD_PREVIEW_PX && height > MIN_CLOUD_PREVIEW_PX) {
       // Previsualizar la nube real (festones) en lugar de un rectángulo
-      const d = this._revisionCloudPath(L, T, W, Hh);
-      g = new fabric.Path(d, Object.assign({ strokeLineJoin:'round', strokeLineCap:'round' }, base));
+      const cloudPath = this._revisionCloudPath(left, top, width, height);
+      shape = new fabric.Path(cloudPath, Object.assign({ strokeLineJoin:'round', strokeLineCap:'round' }, base));
     } else {
-      g = new fabric.Rect(Object.assign({ left:L, top:T, width:W, height:Hh }, base));
+      shape = new fabric.Rect(Object.assign({ left, top, width, height }, base));
     }
-    this._tempLine = g;
-    this.canvas.add(g);
+    this._tempLine = shape;
+    this.canvas.add(shape);
     this.canvas.renderAll();
   }
 
@@ -643,17 +737,18 @@ export class MarkupLayer {
      TECLADO
      ════════════════════════════════════════════════════════════════════ */
   _bindKeyboard() {
-    this._keyFn = e => {
-      const tag = document.activeElement.tagName;
-      if (tag==='INPUT'||tag==='TEXTAREA') return;
+    this._keyFn = domEvent => {
+      const activeTag = document.activeElement.tagName;
+      if (activeTag==='INPUT'||activeTag==='TEXTAREA') return;
 
-      if (e.key==='Enter' && this._isDrawing) { this._finalizeMultiPoint(); return; }
-      if (e.key==='Escape')                   { this._cancelDrawing();       return; }
+      if (domEvent.key==='Enter' && this._isDrawing) { this._finalizeMultiPoint(); return; }
+      if (domEvent.key==='Escape')                   { this._cancelDrawing();       return; }
 
-      if ((e.key==='Delete'||e.key==='Backspace')) {
+      if ((domEvent.key==='Delete'||domEvent.key==='Backspace')) {
         const obj = this.canvas.getActiveObject();
         if (obj && !obj.isBackground) {
           if (obj.isEditing) return; // texto en edición
+          if (obj.data?.remoto) return; // figura de otro usuario → no borrable
           // Eliminar también su etiqueta de texto enlazada
           if (obj.data?.type === 'cloud' && obj.data?.cloudId) this._removeCloudLabel(obj.data.cloudId);
           if (obj.data?.labelId) { this._removeLabel(obj.data.labelId); this._removeThumb(obj.data.labelId); }
@@ -666,19 +761,19 @@ export class MarkupLayer {
     document.addEventListener('keydown', this._keyFn);
 
     // Barra espaciadora mantenida → pan temporal (se restaura al soltar)
-    document.addEventListener('keydown', e => {
-      const tag = document.activeElement.tagName;
-      if (tag==='INPUT'||tag==='TEXTAREA') return;
-      if (e.code === 'Space' && !this._spaceDown) {
+    document.addEventListener('keydown', domEvent => {
+      const activeTag = document.activeElement.tagName;
+      if (activeTag==='INPUT'||activeTag==='TEXTAREA') return;
+      if (domEvent.code === 'Space' && !this._spaceDown) {
         this._spaceDown = true;
         this.canvas.selection = false;          // sin rectángulo de selección al panear
         this.canvas.defaultCursor = 'grab';
         this.canvas.setCursor('grab');
-        e.preventDefault();
+        domEvent.preventDefault();
       }
     });
-    document.addEventListener('keyup', e => {
-      if (e.code === 'Space') {
+    document.addEventListener('keyup', domEvent => {
+      if (domEvent.code === 'Space') {
         this._spaceDown = false;
         this.canvas.selection = (this.currentTool === 'select');
         this.canvas.defaultCursor = this.currentTool==='pan' ? 'grab' : 'default';
@@ -739,6 +834,7 @@ export class MarkupLayer {
       case 'perimeter': this._addPerimeter(pts); break;
       case 'angle':     if (pts.length>=3) this._addAngle(pts[0],pts[1],pts[2]); break;
     }
+    if (this.onAutoSelect) this.onAutoSelect();   // una sola inserción → volver a seleccionar
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -747,71 +843,75 @@ export class MarkupLayer {
 
   /* ── Flecha ─────────────────────────────────────────────────────────── */
   _addArrow(x1,y1,x2,y2) {
-    const ang  = Math.atan2(y2-y1,x2-x1)*(180/Math.PI);
-    const size = Math.max(10,this.strokeWidth*5);
-    const grp  = new fabric.Group([
+    const angle = Math.atan2(y2-y1,x2-x1)*(180/Math.PI);
+    const size  = Math.max(10,this.strokeWidth*5);
+    const group = new fabric.Group([
       new fabric.Line([x1,y1,x2,y2],{stroke:this.strokeColor,strokeWidth:this.strokeWidth,selectable:false}),
-      new fabric.Triangle({left:x2,top:y2,width:size,height:size,fill:this.strokeColor,stroke:this.strokeColor,angle:ang+90,originX:'center',originY:'center',selectable:false}),
+      new fabric.Triangle({left:x2,top:y2,width:size,height:size,fill:this.strokeColor,stroke:this.strokeColor,angle:angle+90,originX:'center',originY:'center',selectable:false}),
     ]);
-    grp.data = { type:'arrow' };
-    this._place(grp);
+    group.data = { type:'arrow' };
+    this._place(group);
   }
 
   /* ── Dimensión / Cota ───────────────────────────────────────────────── */
   _addDimension(x1,y1,x2,y2) {
-    const dist  = this.scaleManager.distance(x1,y1,x2,y2);
-    const label = this.scaleManager.format(dist);
-    const ang   = Math.atan2(y2-y1,x2-x1)*(180/Math.PI);
-    const perpR = (ang+90)*Math.PI/180;
-    const tick  = 10, sw = this.strokeWidth, sz = Math.max(8,sw*4);
-    const dx    = Math.cos(perpR)*tick, dy = Math.sin(perpR)*tick;
-    const mx=(x1+x2)/2, my=(y1+y2)/2;
+    const dist      = this.scaleManager.distance(x1,y1,x2,y2);
+    const label     = this.scaleManager.format(dist);
+    const angle     = Math.atan2(y2-y1,x2-x1)*(180/Math.PI);
+    const perpAngle = (angle+90)*Math.PI/180;
+    const TICK_LEN  = 10;
+    const strokeW   = this.strokeWidth, arrowSize = Math.max(8,strokeW*4);
+    const dx        = Math.cos(perpAngle)*TICK_LEN, dy = Math.sin(perpAngle)*TICK_LEN;
+    const midX=(x1+x2)/2, midY=(y1+y2)/2;
+    const LABEL_OFFSET = 18;
 
-    const grp = new fabric.Group([
-      new fabric.Line([x1,y1,x2,y2],{stroke:this.strokeColor,strokeWidth:sw,selectable:false}),
-      new fabric.Line([x1-dx,y1-dy,x1+dx,y1+dy],{stroke:this.strokeColor,strokeWidth:sw,selectable:false}),
-      new fabric.Line([x2-dx,y2-dy,x2+dx,y2+dy],{stroke:this.strokeColor,strokeWidth:sw,selectable:false}),
-      new fabric.Triangle({left:x1,top:y1,width:sz,height:sz,fill:this.strokeColor,stroke:this.strokeColor,angle:ang-90,originX:'center',originY:'center',selectable:false}),
-      new fabric.Triangle({left:x2,top:y2,width:sz,height:sz,fill:this.strokeColor,stroke:this.strokeColor,angle:ang+90,originX:'center',originY:'center',selectable:false}),
-      new fabric.Text(label,{left:mx,top:my-18,fontSize:14,fontFamily:'Arial',fill:this.strokeColor,backgroundColor:'#1c213099',originX:'center',originY:'bottom',selectable:false}),
+    const group = new fabric.Group([
+      new fabric.Line([x1,y1,x2,y2],{stroke:this.strokeColor,strokeWidth:strokeW,selectable:false}),
+      new fabric.Line([x1-dx,y1-dy,x1+dx,y1+dy],{stroke:this.strokeColor,strokeWidth:strokeW,selectable:false}),
+      new fabric.Line([x2-dx,y2-dy,x2+dx,y2+dy],{stroke:this.strokeColor,strokeWidth:strokeW,selectable:false}),
+      new fabric.Triangle({left:x1,top:y1,width:arrowSize,height:arrowSize,fill:this.strokeColor,stroke:this.strokeColor,angle:angle-90,originX:'center',originY:'center',selectable:false}),
+      new fabric.Triangle({left:x2,top:y2,width:arrowSize,height:arrowSize,fill:this.strokeColor,stroke:this.strokeColor,angle:angle+90,originX:'center',originY:'center',selectable:false}),
+      new fabric.Text(label,{left:midX,top:midY-LABEL_OFFSET,fontSize:14,fontFamily:'Arial',fill:this.strokeColor,backgroundColor:'#1c213099',originX:'center',originY:'bottom',selectable:false}),
     ]);
-    grp.data = { type:'dimension', label };
-    this._place(grp);
+    group.data = { type:'dimension', label };
+    this._place(group);
   }
 
   /* ── Ángulo ─────────────────────────────────────────────────────────── */
   _addAngle(vertex, a1, a2) {
+    const ARC_RADIUS  = 30;
+    const LABEL_OFFSET = 16;
+    const FULL_CIRCLE_DEG = 360;
     const ang1 = Math.atan2(a1.y-vertex.y, a1.x-vertex.x);
     const ang2 = Math.atan2(a2.y-vertex.y, a2.x-vertex.x);
-    let   deg  = Math.abs((ang2-ang1) * 180/Math.PI);
-    if (deg > 180) deg = 360 - deg;
-    const label = deg.toFixed(1) + '°';
-    const R = 30;
-    const midAng = (ang1+ang2)/2;
-    const arc = this._arcPath(vertex.x, vertex.y, R, ang1, ang2);
+    let   degrees = Math.abs((ang2-ang1) * 180/Math.PI);
+    if (degrees > 180) degrees = FULL_CIRCLE_DEG - degrees;
+    const label = degrees.toFixed(1) + '°';
+    const midAngle = (ang1+ang2)/2;
+    const arc = this._arcPath(vertex.x, vertex.y, ARC_RADIUS, ang1, ang2);
 
-    const grp = new fabric.Group([
+    const group = new fabric.Group([
       new fabric.Line([vertex.x,vertex.y,a1.x,a1.y],{stroke:this.strokeColor,strokeWidth:this.strokeWidth,selectable:false}),
       new fabric.Line([vertex.x,vertex.y,a2.x,a2.y],{stroke:this.strokeColor,strokeWidth:this.strokeWidth,selectable:false}),
       new fabric.Path(arc,{stroke:this.strokeColor,strokeWidth:1,fill:'transparent',selectable:false}),
       new fabric.Text(label,{
-        left:vertex.x+(R+16)*Math.cos(midAng),
-        top :vertex.y+(R+16)*Math.sin(midAng),
+        left:vertex.x+(ARC_RADIUS+LABEL_OFFSET)*Math.cos(midAngle),
+        top :vertex.y+(ARC_RADIUS+LABEL_OFFSET)*Math.sin(midAngle),
         fontSize:13,fontFamily:'Arial',fill:this.strokeColor,
         backgroundColor:'#1c213099',originX:'center',originY:'center',selectable:false,
       }),
     ]);
-    grp.data = { type:'angle', label };
-    this._place(grp);
+    group.data = { type:'angle', label };
+    this._place(group);
   }
 
   _arcPath(cx,cy,r,a1,a2) {
     const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
     const x2=cx+r*Math.cos(a2), y2=cy+r*Math.sin(a2);
     let diff = a2-a1; if (diff<0) diff+=2*Math.PI;
-    const la = diff > Math.PI ? 1 : 0;
-    const sw = diff > 0 ? 1 : 0;
-    return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${la} ${sw} ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+    const largeArc = diff > Math.PI ? 1 : 0;
+    const sweep    = diff > 0 ? 1 : 0;
+    return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} ${sweep} ${x2.toFixed(2)} ${y2.toFixed(2)}`;
   }
 
   /* ── Rectángulo ─────────────────────────────────────────────────────── */
@@ -857,24 +957,27 @@ export class MarkupLayer {
       strokeDashArray:[6,3], rx:3, ry:3,
       hoverCursor:'pointer',
     });
-    obj.data = { type:'link', targetPage:null };
+    // targetPage  → salto a una hoja del MISMO documento
+    // targetRepoId→ salto a OTRO plano (id_en_repositorio); APEX maneja la navegación
+    obj.data = { type:'link', targetPage:null, targetRepoId:null, targetName:null, targetFile:null };
     this._place(obj);
   }
 
   /* ── Nube de revisión ───────────────────────────────────────────────── */
   _addCloud(pts) {
+    const SCALLOP_SPACING = 18;   // px lógicos entre festones
     const closed = [...pts, pts[0]];
-    let d = `M ${pts[0].x} ${pts[0].y}`;
+    let pathData = `M ${pts[0].x} ${pts[0].y}`;
     for (let i=0;i<closed.length-1;i++) {
-      const a=closed[i], b=closed[i+1];
-      const dx=b.x-a.x, dy=b.y-a.y;
-      const len=Math.sqrt(dx*dx+dy*dy), n=Math.max(2,Math.round(len/18)), r=len/n/2;
-      for (let j=1;j<=n;j++){
-        const t=j/n;
-        d+=` A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${(a.x+dx*t).toFixed(1)} ${(a.y+dy*t).toFixed(1)}`;
+      const from=closed[i], to=closed[i+1];
+      const dx=to.x-from.x, dy=to.y-from.y;
+      const len=Math.sqrt(dx*dx+dy*dy), scallopCount=Math.max(2,Math.round(len/SCALLOP_SPACING)), radius=len/scallopCount/2;
+      for (let j=1;j<=scallopCount;j++){
+        const fraction=j/scallopCount;
+        pathData+=` A ${radius.toFixed(1)} ${radius.toFixed(1)} 0 0 1 ${(from.x+dx*fraction).toFixed(1)} ${(from.y+dy*fraction).toFixed(1)}`;
       }
     }
-    const obj = new fabric.Path(d+' Z',{
+    const obj = new fabric.Path(pathData+' Z',{
       stroke:this.strokeColor, strokeWidth:this.strokeWidth, fill:this.fillColor,
     });
     obj.data = { type:'cloud', points: pts };
@@ -883,11 +986,11 @@ export class MarkupLayer {
 
   /* ── Nube natural (drag o clic simple) ─────────────────────────────── */
   _addCloudFromRect(x1, y1, x2, y2) {
-    const L = Math.min(x1,x2), T = Math.min(y1,y2);
-    const W = Math.abs(x2-x1), H = Math.abs(y2-y1);
+    const left = Math.min(x1,x2), top = Math.min(y1,y2);
+    const width = Math.abs(x2-x1), height = Math.abs(y2-y1);
 
-    const d = this._revisionCloudPath(L, T, W, H);
-    const obj = new fabric.Path(d, {
+    const cloudPath = this._revisionCloudPath(left, top, width, height);
+    const obj = new fabric.Path(cloudPath, {
       stroke         : this.strokeColor,
       strokeWidth    : this.strokeWidth,
       fill           : this.fillColor,
@@ -912,66 +1015,69 @@ export class MarkupLayer {
    * Nube de revisión estilo Procore/Bluebeam: festones (arcos) uniformes
    * recorriendo el perímetro del rectángulo, todos bombeados hacia afuera.
    */
-  _revisionCloudPath(L, T, W, H) {
+  _revisionCloudPath(left, top, width, height) {
+    const MIN_SCALLOP_RADIUS = 7;
+    const MAX_SCALLOP_RADIUS = 20;
     // Radio del festón: proporcional al tamaño, acotado para que se vea parejo
-    const R = Math.max(7, Math.min(20, Math.min(W, H) / 3));
+    const scallopRadius = Math.max(MIN_SCALLOP_RADIUS, Math.min(MAX_SCALLOP_RADIUS, Math.min(width, height) / 3));
     const corners = [
-      [L,     T    ],   // sup-izq
-      [L + W, T    ],   // sup-der
-      [L + W, T + H],   // inf-der
-      [L,     T + H],   // inf-izq   (sentido horario, y hacia abajo)
+      [left,         top         ],   // sup-izq
+      [left + width, top         ],   // sup-der
+      [left + width, top + height],   // inf-der
+      [left,         top + height],   // inf-izq   (sentido horario, y hacia abajo)
     ];
-    let d = `M ${L.toFixed(1)} ${T.toFixed(1)} `;
+    let pathData = `M ${left.toFixed(1)} ${top.toFixed(1)} `;
     for (let i = 0; i < 4; i++) {
       const [x1, y1] = corners[i];
       const [x2, y2] = corners[(i + 1) % 4];
       const len = Math.hypot(x2 - x1, y2 - y1);
-      const n   = Math.max(1, Math.round(len / (2 * R)));  // nº de festones en este lado
-      const r   = (len / n) / 2;                            // radio que encaja exacto
-      const ux  = (x2 - x1) / len, uy = (y2 - y1) / len;
-      for (let k = 1; k <= n; k++) {
-        const px = x1 + ux * (len * k / n);
-        const py = y1 + uy * (len * k / n);
+      const scallopCount = Math.max(1, Math.round(len / (2 * scallopRadius)));  // nº de festones en este lado
+      const radius       = (len / scallopCount) / 2;                            // radio que encaja exacto
+      const unitX = (x2 - x1) / len, unitY = (y2 - y1) / len;
+      for (let k = 1; k <= scallopCount; k++) {
+        const px = x1 + unitX * (len * k / scallopCount);
+        const py = y1 + unitY * (len * k / scallopCount);
         // sweep=1 → el arco bomba hacia afuera al recorrer en sentido horario
-        d += `A ${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${px.toFixed(1)} ${py.toFixed(1)} `;
+        pathData += `A ${radius.toFixed(1)} ${radius.toFixed(1)} 0 0 1 ${px.toFixed(1)} ${py.toFixed(1)} `;
       }
     }
-    return d + 'Z';
+    return pathData + 'Z';
   }
 
-  _naturalCloudPath(L, T, W, H) {
+  _naturalCloudPath(left, top, width, height) {
     // Coordenadas absolutas desde fracción (0–1)
-    const p = (rx, ry) => `${(L + rx * W).toFixed(1)} ${(T + ry * H).toFixed(1)}`;
+    const toPath = (rx, ry) => `${(left + rx * width).toFixed(1)} ${(top + ry * height).toFixed(1)}`;
 
     // Elige 3 o 4 bumps según la proporción ancho/alto
-    if (W / Math.max(H, 1) >= 2.2) {
+    const WIDE_CLOUD_RATIO = 2.2;
+    if (width / Math.max(height, 1) >= WIDE_CLOUD_RATIO) {
       // ── 4 bumps (nube ancha) ────────────────────────────
       return [
-        `M  ${p(0.04, 0.82)}`,
-        `C  ${p(0.00, 0.82)} ${p(0.00, 0.60)} ${p(0.04, 0.50)}`,  // lado izq
-        `C  ${p(0.04, 0.24)} ${p(0.22, 0.14)} ${p(0.28, 0.33)}`,  // bump izq
-        `C  ${p(0.29, 0.39)} ${p(0.32, 0.39)} ${p(0.35, 0.29)}`,  // valle 1
-        `C  ${p(0.35, 0.06)} ${p(0.55, 0.06)} ${p(0.55, 0.29)}`,  // bump ctr-izq
-        `C  ${p(0.57, 0.37)} ${p(0.59, 0.37)} ${p(0.62, 0.28)}`,  // valle 2
-        `C  ${p(0.62, 0.06)} ${p(0.82, 0.06)} ${p(0.82, 0.33)}`,  // bump ctr-der
-        `C  ${p(0.84, 0.39)} ${p(0.86, 0.37)} ${p(0.88, 0.32)}`,  // valle 3
-        `C  ${p(0.92, 0.18)} ${p(1.00, 0.36)} ${p(0.97, 0.52)}`,  // bump der
-        `C  ${p(1.00, 0.62)} ${p(1.00, 0.82)} ${p(0.96, 0.82)}`,  // lado der
-        `C  ${p(0.72, 0.97)} ${p(0.28, 0.97)} ${p(0.04, 0.82)}`,  // base
+        `M  ${toPath(0.04, 0.82)}`,
+        `C  ${toPath(0.00, 0.82)} ${toPath(0.00, 0.60)} ${toPath(0.04, 0.50)}`,  // lado izq
+        `C  ${toPath(0.04, 0.24)} ${toPath(0.22, 0.14)} ${toPath(0.28, 0.33)}`,  // bump izq
+        `C  ${toPath(0.29, 0.39)} ${toPath(0.32, 0.39)} ${toPath(0.35, 0.29)}`,  // valle 1
+        `C  ${toPath(0.35, 0.06)} ${toPath(0.55, 0.06)} ${toPath(0.55, 0.29)}`,  // bump ctr-izq
+        `C  ${toPath(0.57, 0.37)} ${toPath(0.59, 0.37)} ${toPath(0.62, 0.28)}`,  // valle 2
+        `C  ${toPath(0.62, 0.06)} ${toPath(0.82, 0.06)} ${toPath(0.82, 0.33)}`,  // bump ctr-der
+        `C  ${toPath(0.84, 0.39)} ${toPath(0.86, 0.37)} ${toPath(0.88, 0.32)}`,  // valle 3
+        `C  ${toPath(0.92, 0.18)} ${toPath(1.00, 0.36)} ${toPath(0.97, 0.52)}`,  // bump der
+        `C  ${toPath(1.00, 0.62)} ${toPath(1.00, 0.82)} ${toPath(0.96, 0.82)}`,  // lado der
+        `C  ${toPath(0.72, 0.97)} ${toPath(0.28, 0.97)} ${toPath(0.04, 0.82)}`,  // base
         'Z',
       ].join(' ');
     } else {
       // ── 3 bumps (nube estándar) ─────────────────────────
       return [
-        `M  ${p(0.06, 0.82)}`,
-        `C  ${p(0.00, 0.82)} ${p(0.00, 0.62)} ${p(0.06, 0.52)}`,  // lado izq
-        `C  ${p(0.06, 0.24)} ${p(0.28, 0.12)} ${p(0.36, 0.32)}`,  // bump izq
-        `C  ${p(0.38, 0.38)} ${p(0.41, 0.38)} ${p(0.44, 0.30)}`,  // valle 1
-        `C  ${p(0.44, 0.03)} ${p(0.70, 0.03)} ${p(0.70, 0.30)}`,  // bump central (mayor)
-        `C  ${p(0.73, 0.38)} ${p(0.76, 0.38)} ${p(0.78, 0.32)}`,  // valle 2
-        `C  ${p(0.84, 0.12)} ${p(1.00, 0.28)} ${p(0.96, 0.52)}`,  // bump der
-        `C  ${p(1.00, 0.62)} ${p(1.00, 0.82)} ${p(0.94, 0.82)}`,  // lado der
-        `C  ${p(0.70, 0.97)} ${p(0.30, 0.97)} ${p(0.06, 0.82)}`,  // base
+        `M  ${toPath(0.06, 0.82)}`,
+        `C  ${toPath(0.00, 0.82)} ${toPath(0.00, 0.62)} ${toPath(0.06, 0.52)}`,  // lado izq
+        `C  ${toPath(0.06, 0.24)} ${toPath(0.28, 0.12)} ${toPath(0.36, 0.32)}`,  // bump izq
+        `C  ${toPath(0.38, 0.38)} ${toPath(0.41, 0.38)} ${toPath(0.44, 0.30)}`,  // valle 1
+        `C  ${toPath(0.44, 0.03)} ${toPath(0.70, 0.03)} ${toPath(0.70, 0.30)}`,  // bump central (mayor)
+        `C  ${toPath(0.73, 0.38)} ${toPath(0.76, 0.38)} ${toPath(0.78, 0.32)}`,  // valle 2
+        `C  ${toPath(0.84, 0.12)} ${toPath(1.00, 0.28)} ${toPath(0.96, 0.52)}`,  // bump der
+        `C  ${toPath(1.00, 0.62)} ${toPath(1.00, 0.82)} ${toPath(0.94, 0.82)}`,  // lado der
+        `C  ${toPath(0.70, 0.97)} ${toPath(0.30, 0.97)} ${toPath(0.06, 0.82)}`,  // base
         'Z',
       ].join(' ');
     }
@@ -983,66 +1089,73 @@ export class MarkupLayer {
     if (!cloudId) return;
 
     // Buscar etiqueta existente
-    let lbl = this.canvas.getObjects().find(
+    let labelObj = this.canvas.getObjects().find(
       o => o.data?.type === 'cloud-label' && o.data?.cloudId === cloudId
     );
 
     const center = cloudObj.getCenterPoint();
 
-    if (!lbl) {
+    if (!labelObj) {
+      // Tamaño de fuente proporcional al tamaño de la nube
+      const FONT_SIZE_RATIO = 0.14;
+      const FONT_SIZE_BASE  = 10;
       // Crear IText centrado en la nube
-      lbl = new fabric.IText('', {
+      labelObj = new fabric.IText('', {
         left      : center.x,
         top       : center.y,
         originX   : 'center',
         originY   : 'center',
-        fontSize  : Math.round(Math.min(cloudObj.width, cloudObj.height) * 0.14 + 10),
+        fontSize  : Math.round(Math.min(cloudObj.width, cloudObj.height) * FONT_SIZE_RATIO + FONT_SIZE_BASE),
         fontFamily: 'Arial',
         fill      : cloudObj.stroke || this.strokeColor,
         editable  : true,
         textAlign : 'center',
         selectable: true,
       });
-      lbl.data = {
+      labelObj.data = {
         type    : 'cloud-label',
         cloudId : cloudId,
         autor   : this.currentUser,
         fecha   : new Date().toISOString(),
       };
       this._skipSnap = true;
-      this.canvas.add(lbl);
+      this.canvas.add(labelObj);
       this._skipSnap = false;
 
       // Al salir del modo edición: si está vacío, eliminar
       // (bandera para no agregar el listener más de una vez)
-      lbl._exitHandlerBound = true;
-      lbl.on('editing:exited', () => {
-        if (!lbl.text.trim()) {
-          this.canvas.remove(lbl);
+      labelObj._exitHandlerBound = true;
+      labelObj.on('editing:exited', () => {
+        if (!labelObj.text.trim()) {
+          this.canvas.remove(labelObj);
           this.canvas.renderAll();
         } else {
           this._snapshot();
         }
+        this._notifyLocalChange();
       });
+      labelObj.on('changed', () => this._notifyLocalChange());   // en tiempo real al escribir
     }
 
     // Si la etiqueta ya existía (cargada de JSON), asegurar que el listener
     // de salida esté enlazado (solo una vez).
-    if (!lbl._exitHandlerBound) {
-      lbl._exitHandlerBound = true;
-      lbl.on('editing:exited', () => {
-        if (!lbl.text.trim()) {
-          this.canvas.remove(lbl);
+    if (!labelObj._exitHandlerBound) {
+      labelObj._exitHandlerBound = true;
+      labelObj.on('editing:exited', () => {
+        if (!labelObj.text.trim()) {
+          this.canvas.remove(labelObj);
           this.canvas.renderAll();
         } else {
           this._snapshot();
         }
+        this._notifyLocalChange();
       });
+      labelObj.on('changed', () => this._notifyLocalChange());   // en tiempo real al escribir
     }
 
-    this.canvas.setActiveObject(lbl);
-    lbl.enterEditing();
-    lbl.selectAll();
+    this.canvas.setActiveObject(labelObj);
+    labelObj.enterEditing();
+    labelObj.selectAll();
     this.canvas.renderAll();
   }
 
@@ -1052,8 +1165,8 @@ export class MarkupLayer {
 
   /** ¿La figura admite etiqueta de texto? (excluye textos, notas, callouts, fondos) */
   _isLabelable(obj) {
-    const t = obj?.data?.type;
-    return ['rect','ellipse','arrow','highlight','measure','area','perimeter','angle'].includes(t);
+    const type = obj?.data?.type;
+    return ['rect','ellipse','arrow','highlight','measure','area','perimeter','angle'].includes(type);
   }
 
   /** Busca la IText enlazada a una figura por su labelId */
@@ -1065,8 +1178,8 @@ export class MarkupLayer {
 
   /** Texto actual de la etiqueta de una figura ('' si no tiene) */
   getLabelText(obj) {
-    const lbl = obj?.data?.labelId ? this._findLabel(obj.data.labelId) : null;
-    return lbl ? lbl.text : '';
+    const labelObj = obj?.data?.labelId ? this._findLabel(obj.data.labelId) : null;
+    return labelObj ? labelObj.text : '';
   }
 
   /** Crea/actualiza/elimina la etiqueta de texto de una figura (desde el panel) */
@@ -1075,73 +1188,80 @@ export class MarkupLayer {
     text = (text || '').trim();
     if (!obj.data) obj.data = {};
     if (!obj.data.labelId) obj.data.labelId = `lbl-${Date.now().toString(36)}`;
-    let lbl = this._findLabel(obj.data.labelId);
+    let labelObj = this._findLabel(obj.data.labelId);
 
-    if (!text) { if (lbl) { this.canvas.remove(lbl); this.canvas.renderAll(); } return; }
-
-    if (!lbl) {
-      lbl = this._makeLabel(obj);
-      this._skipSnap = true; this.canvas.add(lbl); this._skipSnap = false;
+    if (!text) {
+      if (labelObj) { this.canvas.remove(labelObj); this.canvas.renderAll(); this._notifyLocalChange(); }
+      return;
     }
-    lbl.set('text', text);
+
+    if (!labelObj) {
+      labelObj = this._makeLabel(obj);
+      this._skipSnap = true; this.canvas.add(labelObj); this._skipSnap = false;
+    }
+    labelObj.set('text', text);
     this._syncLabel(obj);
     this.canvas.renderAll();
+    this._notifyLocalChange();   // sincronizar la etiqueta/título en tiempo real
   }
 
   /** Construye la IText centrada en la figura */
   _makeLabel(obj) {
-    const c = obj.getCenterPoint();
-    const lbl = new fabric.IText('', {
-      left: c.x, top: c.y, originX:'center', originY:'center',
+    const center = obj.getCenterPoint();
+    const labelObj = new fabric.IText('', {
+      left: center.x, top: center.y, originX:'center', originY:'center',
       fontSize: 16, fontFamily:'Arial', fill: obj.stroke || this.strokeColor,
       textAlign:'center', editable:true, selectable:true,
     });
-    lbl.data = {
+    labelObj.data = {
       type:'shape-label', labelId: obj.data.labelId,
       autor:this.currentUser, fecha:new Date().toISOString(),
     };
-    this._bindLabelExit(lbl);
-    return lbl;
+    this._bindLabelExit(labelObj);
+    return labelObj;
   }
 
-  _bindLabelExit(lbl) {
-    if (lbl._exitHandlerBound) return;
-    lbl._exitHandlerBound = true;
-    lbl.on('editing:exited', () => {
-      if (!lbl.text.trim()) { this.canvas.remove(lbl); this.canvas.renderAll(); }
+  _bindLabelExit(labelObj) {
+    if (labelObj._exitHandlerBound) return;
+    labelObj._exitHandlerBound = true;
+    labelObj.on('editing:exited', () => {
+      if (!labelObj.text.trim()) { this.canvas.remove(labelObj); this.canvas.renderAll(); }
       else this._snapshot();
+      this._notifyLocalChange();
     });
+    // Mientras se escribe (doble clic in-situ) → sincronizar en tiempo real
+    labelObj.on('changed', () => this._notifyLocalChange());
   }
 
   /** Doble-clic: edita la etiqueta in-situ */
   _editLabel(obj) {
     if (!obj.data) obj.data = {};
     if (!obj.data.labelId) obj.data.labelId = `lbl-${Date.now().toString(36)}`;
-    let lbl = this._findLabel(obj.data.labelId);
-    if (!lbl) {
-      lbl = this._makeLabel(obj);
-      this._skipSnap = true; this.canvas.add(lbl); this._skipSnap = false;
+    let labelObj = this._findLabel(obj.data.labelId);
+    if (!labelObj) {
+      labelObj = this._makeLabel(obj);
+      this._skipSnap = true; this.canvas.add(labelObj); this._skipSnap = false;
     } else {
-      this._bindLabelExit(lbl);
+      this._bindLabelExit(labelObj);
     }
-    this.canvas.setActiveObject(lbl);
-    lbl.enterEditing();
-    lbl.selectAll();
+    this.canvas.setActiveObject(labelObj);
+    labelObj.enterEditing();
+    labelObj.selectAll();
     this.canvas.renderAll();
   }
 
   /** Mueve la etiqueta al centro de su figura */
   _syncLabel(obj) {
-    const lbl = obj?.data?.labelId ? this._findLabel(obj.data.labelId) : null;
-    if (!lbl) return;
-    const c = obj.getCenterPoint();
-    lbl.set({ left: c.x, top: c.y });
-    lbl.setCoords();
+    const labelObj = obj?.data?.labelId ? this._findLabel(obj.data.labelId) : null;
+    if (!labelObj) return;
+    const center = obj.getCenterPoint();
+    labelObj.set({ left: center.x, top: center.y });
+    labelObj.setCoords();
   }
 
   _removeLabel(labelId) {
-    const lbl = this._findLabel(labelId);
-    if (lbl) this.canvas.remove(lbl);
+    const labelObj = this._findLabel(labelId);
+    if (labelObj) this.canvas.remove(labelObj);
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -1162,8 +1282,8 @@ export class MarkupLayer {
   }
 
   _removeThumb(linkId) {
-    const t = this._findThumb(linkId);
-    if (t) this.canvas.remove(t);
+    const thumb = this._findThumb(linkId);
+    if (thumb) this.canvas.remove(thumb);
   }
 
   /** Crea/actualiza/elimina la miniatura según los adjuntos de la figura */
@@ -1183,14 +1303,14 @@ export class MarkupLayer {
     if (existing) this.canvas.remove(existing);
 
     fabric.Image.fromURL(att.dataUrl, img => {
-      const W = 120;                          // ancho objetivo (px lógicos)
-      const s = W / (img.width || W);
+      const THUMB_WIDTH = 120;                          // ancho objetivo (px lógicos)
+      const scale = THUMB_WIDTH / (img.width || THUMB_WIDTH);
       img.set({
-        scaleX: s, scaleY: s,
+        scaleX: scale, scaleY: scale,
         originX:'left', originY:'top',
         selectable:false, evented:true,
         hoverCursor:'pointer',
-        stroke:'#0ea5e9', strokeWidth: 2 / s,  // borde visible ~2px reales
+        stroke:'#0ea5e9', strokeWidth: 2 / scale,  // borde visible ~2px reales
       });
       img.data = { type:'att-thumb', linkId, src: att.dataUrl };
       img.isThumb = true;                     // excluida del guardado
@@ -1204,14 +1324,15 @@ export class MarkupLayer {
 
   /** Coloca la miniatura junto a la esquina superior derecha de la figura */
   _syncThumb(obj) {
+    const THUMB_GAP = 6;   // separación px entre la figura y la miniatura
     const linkId = obj?.data?.labelId;
-    const t = linkId ? this._findThumb(linkId) : null;
-    if (!t) return;
+    const thumb = linkId ? this._findThumb(linkId) : null;
+    if (!thumb) return;
     obj.setCoords();
-    const tr = obj.aCoords && obj.aCoords.tr ? obj.aCoords.tr : obj.getCenterPoint();
-    t.set({ left: tr.x + 6, top: tr.y });
-    t.setCoords();
-    this.canvas.bringToFront(t);
+    const topRight = obj.aCoords && obj.aCoords.tr ? obj.aCoords.tr : obj.getCenterPoint();
+    thumb.set({ left: topRight.x + THUMB_GAP, top: topRight.y });
+    thumb.setCoords();
+    this.canvas.bringToFront(thumb);
   }
 
   /* ── Estilo en vivo de una figura (desde el panel de propiedades) ────── */
@@ -1220,58 +1341,59 @@ export class MarkupLayer {
     if (prop === 'opacity') {
       obj.set('opacity', val);
     } else {
-      // Para grupos (flecha, cota…) aplicar a los hijos
+      // Para grupos (flecha, cota…) aplicar a los hijos y marcarlos sucios para
+      // que se refresque el bitmap cacheado del grupo (si no, no se ve en vivo).
       const targets = obj.type === 'group' && obj.getObjects ? obj.getObjects() : [obj];
-      targets.forEach(o => o.set(prop, val));
+      targets.forEach(o => { o.set(prop, val); o.dirty = true; });
       obj.set(prop, val);
     }
     obj.dirty = true;
-    this.canvas.requestRenderAll();
+    this.canvas.renderAll();   // render síncrono → cambio visible al instante
   }
 
   /* ── Sincronizar etiqueta al mover / escalar / rotar la nube ─────────── */
   _syncCloudLabel(cloudObj) {
     const cloudId = cloudObj.data?.cloudId;
     if (!cloudId) return;
-    const lbl = this.canvas.getObjects().find(
+    const labelObj = this.canvas.getObjects().find(
       o => o.data?.type === 'cloud-label' && o.data?.cloudId === cloudId
     );
-    if (!lbl) return;
+    if (!labelObj) return;
     const center = cloudObj.getCenterPoint();
-    lbl.set({ left: center.x, top: center.y });
-    lbl.setCoords();
+    labelObj.set({ left: center.x, top: center.y });
+    labelObj.setCoords();
     this.canvas.renderAll();
   }
 
   /* ── Eliminar etiqueta de nube (al borrar la nube) ───────────────────── */
   _removeCloudLabel(cloudId) {
-    const lbl = this.canvas.getObjects().find(
+    const labelObj = this.canvas.getObjects().find(
       o => o.data?.type === 'cloud-label' && o.data?.cloudId === cloudId
     );
-    if (lbl) this.canvas.remove(lbl);
+    if (labelObj) this.canvas.remove(labelObj);
   }
 
   /* ── Área ───────────────────────────────────────────────────────────── */
   _addArea(pts) {
     const pxArea  = this.scaleManager.polygonArea(pts);
     const label   = this.scaleManager.formatArea(pxArea);
-    const cx = pts.reduce((s,p)=>s+p.x,0)/pts.length;
-    const cy = pts.reduce((s,p)=>s+p.y,0)/pts.length;
+    const centerX = pts.reduce((sum,p)=>sum+p.x,0)/pts.length;
+    const centerY = pts.reduce((sum,p)=>sum+p.y,0)/pts.length;
 
     const polygon = new fabric.Polygon(pts,{
       stroke:this.strokeColor, strokeWidth:this.strokeWidth, fill:this.fillColor,
     });
     polygon.data = { type:'area', areaLabel:label };
 
-    const txt = new fabric.Text(label,{
-      left:cx, top:cy, fontSize:14, fontFamily:'Arial',
+    const labelText = new fabric.Text(label,{
+      left:centerX, top:centerY, fontSize:14, fontFamily:'Arial',
       fill:this.strokeColor, backgroundColor:'#1c213099',
       originX:'center', originY:'center', selectable:false,
     });
-    txt.data = { type:'area-label' };
+    labelText.data = { type:'area-label' };
 
     this._place(polygon);
-    this._place(txt);
+    this._place(labelText);
     this.onAreaReady && this.onAreaReady(label);
   }
 
@@ -1286,17 +1408,18 @@ export class MarkupLayer {
     });
     obj.data = { type:'perimeter', label };
 
-    const mx = (pts[0].x+pts[pts.length-1].x)/2;
-    const my = Math.min(...pts.map(p=>p.y)) - 18;
-    const txt = new fabric.Text(label,{
-      left:mx, top:my, fontSize:14, fontFamily:'Arial',
+    const LABEL_OFFSET = 18;
+    const midX = (pts[0].x+pts[pts.length-1].x)/2;
+    const midY = Math.min(...pts.map(p=>p.y)) - LABEL_OFFSET;
+    const labelText = new fabric.Text(label,{
+      left:midX, top:midY, fontSize:14, fontFamily:'Arial',
       fill:this.strokeColor, backgroundColor:'#1c213099',
       originX:'center', originY:'bottom', selectable:false,
     });
-    txt.data = { type:'perimeter-label' };
+    labelText.data = { type:'perimeter-label' };
 
     this._place(obj);
-    this._place(txt);
+    this._place(labelText);
     this.onAreaReady && this.onAreaReady(`Perímetro: ${label}`);
   }
 
@@ -1308,49 +1431,53 @@ export class MarkupLayer {
     });
     obj.data = { type:'text' };
     this._place(obj);
+    if (this.onAutoSelect) this.onAutoSelect();   // herramienta vuelve a "seleccionar"
+    // El texto se sigue pudiendo editar aunque estemos en modo seleccionar
     setTimeout(()=>{ this.canvas.setActiveObject(obj); obj.enterEditing(); obj.selectAll(); this.canvas.renderAll(); },40);
   }
 
   /* ── Nota (post-it) ─────────────────────────────────────────────────── */
   _addNote(pos) {
-    const W=160, H=80, PAD=10;
-    const bg = new fabric.Rect({width:W,height:H,rx:6,ry:6,fill:'#fef3c7',stroke:'#d97706',strokeWidth:1.5,left:0,top:0,selectable:false});
-    const txt = new fabric.IText('Nota',{left:PAD,top:PAD,fontSize:13,fontFamily:'Arial',fill:'#92400e',editable:true,selectable:false,width:W-PAD*2});
-    const grp = new fabric.Group([bg,txt],{left:pos.x,top:pos.y});
-    grp.data = { type:'note' };
-    this._place(grp);
+    const WIDTH=160, HEIGHT=80, PAD=10;
+    const background = new fabric.Rect({width:WIDTH,height:HEIGHT,rx:6,ry:6,fill:'#fef3c7',stroke:'#d97706',strokeWidth:1.5,left:0,top:0,selectable:false});
+    const textObj = new fabric.IText('Nota',{left:PAD,top:PAD,fontSize:13,fontFamily:'Arial',fill:'#92400e',editable:true,selectable:false,width:WIDTH-PAD*2});
+    const group = new fabric.Group([background,textObj],{left:pos.x,top:pos.y});
+    group.data = { type:'note' };
+    this._place(group);
+    if (this.onAutoSelect) this.onAutoSelect();
   }
 
   /* ── Callout (globo con línea de apunte) ─────────────────────────────── */
   _addCallout(pos) {
-    const W=160, H=60, PAD=10;
+    const WIDTH=160, HEIGHT=60, PAD=10;
     const bubbleX=30, bubbleY=-70;
-    const bg   = new fabric.Rect({left:bubbleX,top:bubbleY,width:W,height:H,rx:8,ry:8,fill:'#eff6ff',stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
-    const ptr  = new fabric.Triangle({left:bubbleX+W/2-6,top:bubbleY+H,width:12,height:14,fill:'#3b82f6',selectable:false});
-    const line = new fabric.Line([bubbleX+W/2,bubbleY+H+14,0,0],{stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
-    const txt  = new fabric.IText('Comentario',{left:bubbleX+PAD,top:bubbleY+PAD,fontSize:12,fontFamily:'Arial',fill:'#1e40af',editable:true,selectable:false,width:W-PAD*2});
-    const grp  = new fabric.Group([line,bg,ptr,txt],{left:pos.x,top:pos.y,originX:'center',originY:'bottom'});
-    grp.data   = { type:'callout' };
-    this._place(grp);
+    const background = new fabric.Rect({left:bubbleX,top:bubbleY,width:WIDTH,height:HEIGHT,rx:8,ry:8,fill:'#eff6ff',stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
+    const tip        = new fabric.Triangle({left:bubbleX+WIDTH/2-6,top:bubbleY+HEIGHT,width:12,height:14,fill:'#3b82f6',selectable:false});
+    const line       = new fabric.Line([bubbleX+WIDTH/2,bubbleY+HEIGHT+14,0,0],{stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
+    const textObj    = new fabric.IText('Comentario',{left:bubbleX+PAD,top:bubbleY+PAD,fontSize:12,fontFamily:'Arial',fill:'#1e40af',editable:true,selectable:false,width:WIDTH-PAD*2});
+    const group      = new fabric.Group([line,background,tip,textObj],{left:pos.x,top:pos.y,originX:'center',originY:'bottom'});
+    group.data       = { type:'callout' };
+    this._place(group);
+    if (this.onAutoSelect) this.onAutoSelect();
   }
 
   /* ── Sello (rubber stamp — texto inclinado) ─────────────────────────── */
   addStamp(x, y, label, color) {
-    const col = color || this.strokeColor;
+    const stampColor = color || this.strokeColor;
     const PAD = 12;
-    const txt  = new fabric.Text(label, {
+    const textObj = new fabric.Text(label, {
       fontSize:18, fontFamily:'Arial Black,sans-serif', fontWeight:'bold',
-      fill:col, left:0, top:0, selectable:false,
+      fill:stampColor, left:0, top:0, selectable:false,
     });
-    const rect = new fabric.Rect({
-      left:-PAD, top:-PAD, width:txt.width+PAD*2, height:txt.height+PAD*2,
-      stroke:col, strokeWidth:3, fill:`${col}18`, rx:6, ry:6, selectable:false,
+    const box = new fabric.Rect({
+      left:-PAD, top:-PAD, width:textObj.width+PAD*2, height:textObj.height+PAD*2,
+      stroke:stampColor, strokeWidth:3, fill:`${stampColor}18`, rx:6, ry:6, selectable:false,
     });
-    const grp = new fabric.Group([rect, txt], {
+    const group = new fabric.Group([box, textObj], {
       left:x, top:y, angle:-15, originX:'center', originY:'center',
     });
-    grp.data = { type:'stamp', label };
-    this._place(grp);
+    group.data = { type:'stamp', label };
+    this._place(group);
   }
 
   /* ── Pin de foto estilo Procore: ícono clavado en el plano ──────────────
@@ -1358,14 +1485,14 @@ export class MarkupLayer {
      adjunto del pin. Clic = seleccionar (barra flotante con ojo + ampliar);
      doble clic = abrir en grande. El ojo muestra/oculta una previa de 120px. */
   placePendingImage(dataUrl, name, type) {
-    let cx, cy;
+    let centerX, centerY;
     if (this._pendingImagePos) {
-      cx = this._pendingImagePos.x;
-      cy = this._pendingImagePos.y;
+      centerX = this._pendingImagePos.x;
+      centerY = this._pendingImagePos.y;
     } else {
-      const r = this._visibleLogicalRect();
-      cx = r.x + r.w / 2;
-      cy = r.y + r.h / 2;
+      const rect = this._visibleLogicalRect();
+      centerX = rect.x + rect.w / 2;
+      centerY = rect.y + rect.h / 2;
     }
     this._pendingImagePos = null;
 
@@ -1378,8 +1505,9 @@ export class MarkupLayer {
       strokeLineJoin: 'round', strokeLineCap: 'round',
       originX: 'center', originY: 'center',
     });
-    const gs = 19 / (glyph.height || 19);
-    glyph.scale(gs);
+    const GLYPH_TARGET_HEIGHT = 19;
+    const glyphScale = GLYPH_TARGET_HEIGHT / (glyph.height || GLYPH_TARGET_HEIGHT);
+    glyph.scale(glyphScale);
     const badge = new fabric.Rect({
       width: 40, height: 34, rx: 9, ry: 9,
       fill: ACCENT, stroke: '#fff', strokeWidth: 2.5,
@@ -1389,11 +1517,11 @@ export class MarkupLayer {
       width: 14, height: 10, fill: ACCENT, stroke: '#fff', strokeWidth: 1.5,
       angle: 180, originX: 'center', originY: 'center', top: 21,
     });
-    const grp = new fabric.Group([tip, badge, glyph], {
-      left: cx, top: cy, originX: 'center', originY: 'bottom',
+    const group = new fabric.Group([tip, badge, glyph], {
+      left: centerX, top: centerY, originX: 'center', originY: 'bottom',
       hoverCursor: 'pointer',
     });
-    grp.data = {
+    group.data = {
       type: 'photo-pin',
       name: name || 'imagen',
       attShown: false,                                   // vista limpia: sin previa grande
@@ -1404,28 +1532,28 @@ export class MarkupLayer {
         dataUrl,
       }],
     };
-    this._place(grp);
+    this._place(group);
   }
 
   /* ── Etiqueta profesional (borde doble ± trama diagonal) ────────────── */
 
   /** Genera un canvas pequeño con líneas diagonales para usar como patrón */
   _makeHatchCanvas(color) {
-    const sz = 9;
-    const c  = document.createElement('canvas');
-    c.width  = sz;
-    c.height = sz;
-    const cx = c.getContext('2d');
-    cx.strokeStyle = color;
-    cx.lineWidth   = 1.2;
-    cx.globalAlpha = 0.42;
+    const size = 9;
+    const canvasEl  = document.createElement('canvas');
+    canvasEl.width  = size;
+    canvasEl.height = size;
+    const ctx = canvasEl.getContext('2d');
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.2;
+    ctx.globalAlpha = 0.42;
     // Diagonal ↘ continua a tile
-    cx.beginPath();
-    cx.moveTo(sz, 0); cx.lineTo(0, sz);
-    cx.moveTo(sz * 2, 0); cx.lineTo(sz, sz);
-    cx.moveTo(0, 0); cx.lineTo(-sz, sz);
-    cx.stroke();
-    return c;
+    ctx.beginPath();
+    ctx.moveTo(size, 0); ctx.lineTo(0, size);
+    ctx.moveTo(size * 2, 0); ctx.lineTo(size, size);
+    ctx.moveTo(0, 0); ctx.lineTo(-size, size);
+    ctx.stroke();
+    return canvasEl;
   }
 
   /**
@@ -1433,49 +1561,49 @@ export class MarkupLayer {
    * @param {string} style  'solid' | 'hatch'
    */
   addLabel(x, y, text, color, style = 'solid') {
-    const col   = color || this.strokeColor;
+    const labelColor = color || this.strokeColor;
     const PAD_H = 18, PAD_V = 11;
-    const SW    = 3;   // grosor borde exterior
-    const GAP   = 4;   // espacio entre borde exterior e interior
+    const OUTER_BORDER_WIDTH = 3;   // grosor borde exterior
+    const BORDER_GAP         = 4;   // espacio entre borde exterior e interior
 
     // Medir texto antes de construir el grupo
     const probe = new fabric.Text(text, {
       fontSize:22, fontFamily:'Arial Black, Impact, sans-serif',
       fontWeight:'bold', charSpacing:80,
     });
-    const TW = probe.width, TH = probe.height;
-    const W  = TW + PAD_H * 2;
-    const H  = TH + PAD_V * 2;
+    const textWidth = probe.width, textHeight = probe.height;
+    const width  = textWidth + PAD_H * 2;
+    const height = textHeight + PAD_V * 2;
 
     const objs = [];
 
     // Trama diagonal (solo para estilo 'hatch')
     if (style === 'hatch') {
-      const pat = new fabric.Pattern({
-        source  : this._makeHatchCanvas(col),
+      const pattern = new fabric.Pattern({
+        source  : this._makeHatchCanvas(labelColor),
         repeat  : 'repeat',
       });
       objs.push(new fabric.Rect({
-        left:0, top:0, width:W, height:H,
-        fill: pat, stroke:'transparent', strokeWidth:0,
+        left:0, top:0, width, height,
+        fill: pattern, stroke:'transparent', strokeWidth:0,
         selectable:false, evented:false,
       }));
     }
 
     // Borde exterior (más grueso)
     objs.push(new fabric.Rect({
-      left:0, top:0, width:W, height:H,
-      stroke:col, strokeWidth:SW,
-      fill: style === 'hatch' ? 'transparent' : `${col}15`,
+      left:0, top:0, width, height,
+      stroke:labelColor, strokeWidth:OUTER_BORDER_WIDTH,
+      fill: style === 'hatch' ? 'transparent' : `${labelColor}15`,
       rx:2, ry:2, selectable:false,
     }));
 
     // Borde interior (línea fina)
-    const inset = SW + GAP;
+    const inset = OUTER_BORDER_WIDTH + BORDER_GAP;
     objs.push(new fabric.Rect({
       left:inset, top:inset,
-      width:W - inset * 2, height:H - inset * 2,
-      stroke:col, strokeWidth:1.2, fill:'transparent',
+      width:width - inset * 2, height:height - inset * 2,
+      stroke:labelColor, strokeWidth:1.2, fill:'transparent',
       rx:1, ry:1, selectable:false,
     }));
 
@@ -1483,38 +1611,53 @@ export class MarkupLayer {
     objs.push(new fabric.Text(text, {
       left: PAD_H, top: PAD_V,
       fontSize:22, fontFamily:'Arial Black, Impact, sans-serif',
-      fontWeight:'bold', fill:col, charSpacing:80, selectable:false,
+      fontWeight:'bold', fill:labelColor, charSpacing:80, selectable:false,
     }));
 
-    const grp = new fabric.Group(objs, {
+    const group = new fabric.Group(objs, {
       left:x, top:y, originX:'center', originY:'center',
     });
-    grp.data = { type:'label', label:text, style };
-    this._place(grp);
+    group.data = { type:'label', label:text, style };
+    this._place(group);
   }
 
   /* ════════════════════════════════════════════════════════════════════
      API PÚBLICA
      ════════════════════════════════════════════════════════════════════ */
 
-  setMarkupVisible(v) {
-    this._markupObjs().forEach(o => { o.visible = v; });
+  setMarkupVisible(visible) {
+    this._markupObjs().forEach(o => { o.visible = visible; });
     this.canvas.renderAll();
   }
 
   zoom(factor) {
-    const z = Math.min(Math.max(this.canvas.getZoom()*factor,0.04),20);
-    this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},z);
-    this.onZoomChange && this.onZoomChange(z);
+    const zoom = Math.min(Math.max(this.canvas.getZoom()*factor,MIN_ZOOM),MAX_ZOOM);
+    this.canvas.zoomToPoint({x:this.canvas.width/2,y:this.canvas.height/2},zoom);
+    this.onZoomChange && this.onZoomChange(zoom);
     this._scheduleDetail();
   }
 
   /** Zoom a un nivel absoluto (ej: 1 = 100%), centrado en el lienzo */
   zoomTo(z) {
-    z = Math.min(Math.max(z, 0.04), 20);
+    z = Math.min(Math.max(z, MIN_ZOOM), MAX_ZOOM);
     this.canvas.zoomToPoint({x:this.canvas.width/2, y:this.canvas.height/2}, z);
     this.onZoomChange && this.onZoomChange(z);
     this._scheduleDetail();
+  }
+
+  /**
+   * Zoom escalonado de 10 en 10 % (botones +/− y atajos de teclado).
+   * Ajusta primero al múltiplo de 10 más cercano y luego mueve un escalón,
+   * de modo que el porcentaje siempre cae en 10, 20, 30, … %.
+   * @param {number} dir  +1 acercar, −1 alejar
+   */
+  zoomStep(dir) {
+    const cur = this.canvas.getZoom() * 100;
+    let next = dir > 0
+      ? (Math.floor(cur / 10 + 1e-6) + 1) * 10
+      : (Math.ceil(cur / 10 - 1e-6) - 1) * 10;
+    next = Math.max(10, next);          // no bajar de 10 %
+    this.zoomTo(next / 100);
   }
 
   getZoom()     { return this.canvas.getZoom(); }
@@ -1526,6 +1669,132 @@ export class MarkupLayer {
     return JSON.stringify(
       this._markupObjs().filter(o=>!o.isThumb).map(o=>o.toObject(['data','name']))
     );
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     COLABORACIÓN EN TIEMPO REAL — capa por autor
+     Cada usuario es dueño de SUS objetos. Se sincroniza la capa completa de
+     un autor (no objeto-por-objeto): reusa la misma serialización que el
+     guardado y maneja labels/thumbs/nubes sin lógica extra.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /** Serializa SOLO los objetos del autor indicado (su capa de la página). */
+  getLayerJSON(autor) {
+    return JSON.stringify(
+      this._markupObjs()
+        .filter(o => !o.isThumb && (o.data?.autor || 'Anónimo') === autor)
+        .map(o => o.toObject(['data','name']))
+    );
+  }
+
+  /** Avisa (con debounce) que el usuario local cambió su capa. */
+  _notifyLocalChange() {
+    if (this._applyingRemote || !this.onLocalChange) return;
+    if (this._collabTimer) clearTimeout(this._collabTimer);
+    this._collabTimer = setTimeout(() => this.onLocalChange(), 500);
+  }
+
+  /**
+   * Reemplaza la capa de un autor REMOTO con la versión recibida.
+   * Los objetos ajenos quedan bloqueados (cada quien dueño de lo suyo).
+   * No dispara snapshots ni re-emite (flag _applyingRemote).
+   */
+  applyRemoteLayer(autor, json) {
+    if (!autor || autor === this.currentUser) return;   // nunca pisar lo propio
+    this._applyingRemote = true;
+    this._skipSnap = true;
+
+    // 1) Quitar los objetos actuales de ese autor (y sus labels/thumbs)
+    this._markupObjs()
+      .filter(o => (o.data?.autor || 'Anónimo') === autor)
+      .forEach(o => {
+        if (o.data?.labelId) { this._removeLabel(o.data.labelId); this._removeThumb(o.data.labelId); }
+        this.canvas.remove(o);
+      });
+
+    // 2) Pintar la capa recibida (bloqueada para el usuario local)
+    const objects = json ? JSON.parse(json) : [];
+    const finish = () => {
+      this._applyAuthorVisibility();   // respetar el filtro de autores ocultos
+      this._skipSnap = false;
+      this._applyingRemote = false;
+      this._keepCursorsOnTop();
+      this.canvas.renderAll();
+    };
+    if (!objects.length) { finish(); return; }
+
+    fabric.util.enlivenObjects(objects, enlivened => {
+      enlivened.forEach(o => {
+        // Se puede SELECCIONAR (para ver sus propiedades) pero NO editar/mover:
+        // cada usuario es dueño de sus objetos.
+        o.selectable   = true;
+        o.evented      = true;       // recibe hover → tooltip con autor y hora
+        o.hoverCursor  = 'help';
+        o.lockMovementX = o.lockMovementY = true;
+        o.lockScalingX  = o.lockScalingY  = true;
+        o.lockRotation  = true;
+        o.hasControls   = false;     // sin manijas de redimensión/rotación
+        o.editable      = false;     // IText/etiquetas no editables
+        if (o.data) o.data.remoto = true;   // marca de objeto ajeno (no borrable)
+        this.canvas.add(o);
+      });
+      enlivened.forEach(o => { if (this._firstImageAttachment(o)) this.refreshThumb(o); });
+      finish();
+    });
+  }
+
+  /* ── Cursores remotos en vivo ──────────────────────────────────────── */
+
+  /** Crea/actualiza el cursor de un peer en coordenadas LÓGICAS del plano. */
+  setPeerCursor(id, x, y, user, color) {
+    let cursor = this._peerCursors.get(id);
+    if (!cursor) {
+      const triangle = new fabric.Triangle({
+        width: 12, height: 16, fill: color || '#3b82f6',
+        left: 0, top: 0, angle: -35, originX: 'left', originY: 'top',
+        stroke: '#fff', strokeWidth: 1,
+      });
+      const nameTag = new fabric.Text(` ${user || ''} `, {
+        fontSize: 12, fill: '#fff', backgroundColor: color || '#3b82f6',
+        left: 10, top: 14, originX: 'left', originY: 'top', fontFamily: 'sans-serif',
+      });
+      cursor = new fabric.Group([triangle, nameTag], {
+        selectable: false, evented: false, hoverCursor: 'default',
+        originX: 'left', originY: 'top',
+      });
+      cursor.isCursor = true;
+      this._peerCursors.set(id, cursor);
+      this.canvas.add(cursor);
+    }
+    cursor.set({ left: x, top: y });
+    // Tamaño constante en pantalla, independiente del zoom
+    const zoom = this.canvas.getZoom() || 1;
+    cursor.scaleX = cursor.scaleY = 1 / zoom;
+    cursor.setCoords();
+    this._keepCursorsOnTop();
+    this.canvas.requestRenderAll();
+  }
+
+  /** Elimina el cursor de un peer (salió de la sala). */
+  removePeerCursor(id) {
+    const cursor = this._peerCursors.get(id);
+    if (cursor) { this.canvas.remove(cursor); this._peerCursors.delete(id); this.canvas.requestRenderAll(); }
+  }
+
+  /** Quita todos los cursores (cambio de plano / desconexión). */
+  clearPeerCursors() {
+    this._peerCursors.forEach(cursor => this.canvas.remove(cursor));
+    this._peerCursors.clear();
+    this.canvas.requestRenderAll();
+  }
+
+  _keepCursorsOnTop() {
+    this._peerCursors.forEach(cursor => cursor.bringToFront && cursor.bringToFront());
+  }
+
+  /** Convierte un evento del DOM a coordenadas lógicas del plano. */
+  scenePointFromEvent(e) {
+    return this.canvas.getPointer(e);
   }
 
   setMarkupJSON(json) {
@@ -1541,6 +1810,7 @@ export class MarkupLayer {
       enlivened.forEach(o=>this.canvas.add(o));
       // Regenerar miniaturas de figuras que tengan imágenes adjuntas
       enlivened.forEach(o => { if (this._firstImageAttachment(o)) this.refreshThumb(o); });
+      this._applyAuthorVisibility();   // respetar el filtro de autores ocultos
       this.canvas.renderAll(); this._skipSnap=false;
       this._undoStack=[]; this._redoStack=[];
       this.onUndoChange&&this.onUndoChange(0,0);
@@ -1555,7 +1825,39 @@ export class MarkupLayer {
     this.onUndoChange&&this.onUndoChange(0,0);
   }
 
-  exportPNG(mult=2) { return this.canvas.toDataURL({format:'png',multiplier:mult}); }
+  /** Elimina SOLO las marcas del usuario actual (no las ajenas/bloqueadas). */
+  clearMyMarkup() {
+    const mine = this._markupObjs().filter(
+      o => !o.data?.remoto && (o.data?.autor || 'Anónimo') === this.currentUser
+    );
+    mine.forEach(o => {
+      if (o.data?.type === 'cloud' && o.data?.cloudId) this._removeCloudLabel(o.data.cloudId);
+      if (o.data?.labelId) { this._removeLabel(o.data.labelId); this._removeThumb(o.data.labelId); }
+      this.canvas.remove(o);
+    });
+    this.canvas.discardActiveObject();
+    this.canvas.renderAll();
+    this._snapshot();
+  }
+
+  exportPNG(multiplier=2) { return this.canvas.toDataURL({format:'png',multiplier}); }
+
+  /**
+   * Exporta la PÁGINA completa (PDF + marcas si están visibles) como PNG.
+   * Ajusta la vista a toda la hoja para no recortar, exporta y restaura.
+   */
+  exportDocument(multiplier = 3) {
+    if (!this._pdfW) return this.exportPNG(multiplier);
+    const savedViewport = this.canvas.viewportTransform.slice();
+    this._clearDetail();        // usar el fondo base completo, sin el tile de zoom
+    this._fitToCanvas();        // toda la página a la vista
+    this.canvas.renderAll();
+    const url = this.canvas.toDataURL({ format: 'png', multiplier });
+    this.canvas.setViewportTransform(savedViewport);
+    this.canvas.renderAll();
+    this._scheduleDetail();
+    return url;
+  }
 
   /** logicalHeight de la página actual (para XFDF) */
   getPageHeight() { return this._pdfH; }
@@ -1563,16 +1865,16 @@ export class MarkupLayer {
   /* ── Undo / Redo ──────────────────────────────────────────────────── */
   undo() {
     if (!this._undoStack.length) return;
-    const cur = this._markupObjs().map(o=>o.toObject(['data','name']));
-    this._redoStack.push(JSON.stringify(cur));
+    const current = this._markupObjs().map(o=>o.toObject(['data','name']));
+    this._redoStack.push(JSON.stringify(current));
     this._restoreObjects(this._undoStack.pop());
     this.onUndoChange&&this.onUndoChange(this._undoStack.length,this._redoStack.length);
   }
 
   redo() {
     if (!this._redoStack.length) return;
-    const cur = this._markupObjs().map(o=>o.toObject(['data','name']));
-    this._undoStack.push(JSON.stringify(cur));
+    const current = this._markupObjs().map(o=>o.toObject(['data','name']));
+    this._undoStack.push(JSON.stringify(current));
     this._restoreObjects(this._redoStack.pop());
     this.onUndoChange&&this.onUndoChange(this._undoStack.length,this._redoStack.length);
   }
@@ -1581,7 +1883,7 @@ export class MarkupLayer {
      PRIVADO: utilidades internas
      ════════════════════════════════════════════════════════════════════ */
 
-  _markupObjs() { return this.canvas.getObjects().filter(o=>!o.isBackground); }
+  _markupObjs() { return this.canvas.getObjects().filter(o=>!o.isBackground && !o.isCursor); }
 
   _place(obj) {
     // Inyectar autor y fecha si el objeto no los tiene ya
@@ -1596,20 +1898,38 @@ export class MarkupLayer {
 
   /** Lista de autores únicos en la página actual con conteo de anotaciones */
   getAuthors() {
-    const map = {};
+    const counts = {};
     this._markupObjs().forEach(o => {
-      const a = o.data?.autor || 'Anónimo';
-      map[a] = (map[a] || 0) + 1;
+      const author = o.data?.autor || 'Anónimo';
+      counts[author] = (counts[author] || 0) + 1;
     });
-    return Object.entries(map).map(([name, count]) => ({ name, count }));
+    return Object.entries(counts).map(([name, count]) => ({ name, count }));
   }
 
-  /** Mostrar/ocultar anotaciones de un autor específico */
+  /** ¿Están ocultos los markups de este autor? */
+  isAuthorHidden(name) { return this._hiddenAuthors.has(name); }
+
+  /** Mostrar/ocultar anotaciones de un autor específico (estado persistente) */
   filterByAutor(name, visible) {
+    if (visible) this._hiddenAuthors.delete(name);
+    else         this._hiddenAuthors.add(name);
+    // Fijar la visibilidad de TODOS los objetos de ese autor (ocultar y mostrar)
     this._markupObjs().forEach(o => {
       if ((o.data?.autor || 'Anónimo') === name) o.visible = visible;
     });
     this.canvas.renderAll();
+  }
+
+  /**
+   * Reaplica la visibilidad según los autores ocultos. Se llama tras recrear
+   * objetos (capa remota, cambio de página) para que el filtro no se pierda.
+   */
+  _applyAuthorVisibility() {
+    if (!this._hiddenAuthors.size) return;
+    this._markupObjs().forEach(o => {
+      const author = o.data?.autor || 'Anónimo';
+      if (this._hiddenAuthors.has(author)) o.visible = false;
+    });
   }
 
   _snapshot() {
@@ -1622,9 +1942,9 @@ export class MarkupLayer {
   _restoreObjects(jsonStr) {
     this._skipSnap=true;
     this._markupObjs().forEach(o=>this.canvas.remove(o));
-    const objs = JSON.parse(jsonStr||'[]');
-    if (!objs.length) { this.canvas.renderAll(); this._skipSnap=false; return; }
-    fabric.util.enlivenObjects(objs, enlivened => {
+    const objects = JSON.parse(jsonStr||'[]');
+    if (!objects.length) { this.canvas.renderAll(); this._skipSnap=false; return; }
+    fabric.util.enlivenObjects(objects, enlivened => {
       enlivened.forEach(o=>this.canvas.add(o));
       this.canvas.renderAll(); this._skipSnap=false;
     });

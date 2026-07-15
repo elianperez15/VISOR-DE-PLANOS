@@ -3,6 +3,7 @@ import { defineConfig } from 'vite';
 // Visor estático: index.html en la raíz, código en src/, assets vendoreados en public/
 export default defineConfig({
   root: '.',
+  base: '/',               // sirve en la raíz → assets quedan como /assets/...
   publicDir: 'public',
   server: {
     port: 8080,

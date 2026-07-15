@@ -1,0 +1,34 @@
+# Servicio systemd para el WebSocket de colaboración del Visor de Planos.
+# Instalar:
+#   sudo cp server/realtime/saf-collab.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now saf-collab
+# Ver estado / logs:
+#   systemctl status saf-collab
+#   journalctl -u saf-collab -f
+[Unit]
+Description=SAF Planos — WebSocket de colaboración en tiempo real
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Ajusta la ruta a donde copiaste el código en el servidor
+WorkingDirectory=/opt/planos/server/realtime
+ExecStart=/usr/bin/node collab-server.js
+Restart=always
+RestartSec=3
+
+# ── Aquí van las variables de entorno (COLLAB_ORIGINS incluido) ──────────
+Environment=COLLAB_PORT=3100
+Environment=COLLAB_ORIGINS=https://planos.aicsacorp.com
+
+# Endurecimiento básico
+User=planos
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

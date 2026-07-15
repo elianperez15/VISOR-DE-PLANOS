@@ -3,5 +3,11 @@ dist/
 *.log
 .DS_Store
 
+# Variables de entorno locales (versionar solo .env.example)
+.env
+.env.local
+.env.*.local
+.env.production
+
 # Configuración local de Claude Code (no compartir)
 .claude/settings.local.json
