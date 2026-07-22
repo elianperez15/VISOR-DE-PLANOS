@@ -161,6 +161,11 @@ function handleMessage(c, m) {
   } else if (m.t === 'cursor') {
     if (c.doc == null) return;
     broadcast(c.doc, { t: 'cursor', id: c.id, user: c.user, color: c.color, doc: m.doc, page: m.page, x: m.x, y: m.y }, c.id);
+
+  } else if (m.t === 'scale') {
+    // Escala calibrada GLOBAL: se retransmite a toda la sala en tiempo real
+    if (c.doc == null) return;
+    broadcast(c.doc, { t: 'scale', doc: m.doc, scale: m.scale, autor: c.user }, c.id);
   }
 }
 

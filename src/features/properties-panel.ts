@@ -124,14 +124,26 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
     $('ap-desc').value = d.descripcion || '';
     $('ap-desc-count').textContent = ($('ap-desc').value).length;
 
-    // RFI (solo el sello RFI) → muestra el RFI vinculado; se elige con el picker
-    const isRfi = d.type === 'stamp' && String(d.label || '').toUpperCase() === 'RFI';
+    // RFI (sello RFI o nube RFI) → muestra el RFI vinculado; se elige con el picker
+    const isRfiStamp = d.type === 'stamp' && String(d.label || '').toUpperCase() === 'RFI';
+    const isRfiCloud = d.type === 'cloud' && d.isRfi;
+    const isRfi = isRfiStamp || isRfiCloud;
     const rfiSec = $('ap-rfi-section');
     if (rfiSec) rfiSec.style.display = isRfi ? 'block' : 'none';
     if (isRfi) {
+      const linked = d.rfiId != null && String(d.rfiId).trim() !== '';
       const nm = $('ap-rfi-name');
-      if (nm) nm.textContent = d.rfiLabel || (d.rfiId ? `RFI ${d.rfiId}` : '— sin RFI —');
+      if (nm) nm.textContent = d.rfiLabel || (linked ? `RFI ${d.rfiId}` : '— sin RFI —');
+      // Nube RFI ya vinculada: no se puede cambiar ni quitar el RFI (bloqueado)
+      const lockRfi = isRfiCloud && linked;
+      const pickBtn = $('btn-ap-pick-rfi'), clearBtn = $('btn-ap-clear-rfi');
+      if (pickBtn)  pickBtn.style.display  = lockRfi ? 'none' : '';
+      if (clearBtn) clearBtn.style.display = lockRfi ? 'none' : '';
     }
+
+    // Nube RFI: sin "texto en figura" ni edición de apariencia (queda roja por defecto)
+    $('ap-text-section').style.display       = isRfiCloud ? 'none' : 'block';
+    $('ap-appearance-section').style.display = isRfiCloud ? 'none' : 'block';
 
     // Adjuntos (solo el pin de cámara)
     const isPhotoPin = (d.type === 'photo-pin');

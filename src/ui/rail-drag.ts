@@ -1,16 +1,20 @@
 /* ──────────────────────────────────────────────────────────────────────
-   rail-drag.ts — Riel de herramientas flotante y arrastrable
+   rail-drag.ts — Riel de herramientas flotante, arrastrable y orientable
 
-   Permite mover el riel desde su asa (#rail-drag). Fija left/top explícitos
-   (sin transform, que rompería el position:fixed de los flyouts), lo mantiene
-   dentro del área visible y recuerda la posición en localStorage.
+   Permite mover el riel desde su asa (#rail-drag) y alternar su orientación
+   (vertical / horizontal) con #rail-orient. Fija left/top explícitos (sin
+   transform, que rompería el position:fixed de los flyouts), lo mantiene
+   dentro del área visible y recuerda posición + orientación en localStorage.
    ────────────────────────────────────────────────────────────────────── */
+
+import { renderIcons } from './icons';
 
 const STORAGE_KEY = 'saf_rail_pos';
 
 export function initRailDrag(): void {
   const rail   = document.getElementById('tool-rail');
   const handle = document.getElementById('rail-drag');
+  const orient = document.getElementById('rail-orient');
   if (!rail || !handle) return;
   const container = rail.parentElement;   // .saf-main (position: relative)
   if (!container) return;
@@ -27,12 +31,40 @@ export function initRailDrag(): void {
     return { left, top };
   };
 
-  // Posición inicial: la guardada o centrada verticalmente a la izquierda.
+  const isHorizontal = () => rail.classList.contains('rail-horizontal');
+
+  // Refleja la orientación en el icono del botón (y del asa vía CSS).
+  const setOrientIcon = (horizontal: boolean) => {
+    if (!orient) return;
+    orient.innerHTML = `<i data-lucide="${horizontal ? 'arrow-up-down' : 'arrow-left-right'}"></i>`;
+    renderIcons(orient);
+  };
+
+  const save = (left: number, top: number, horizontal: boolean) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ left, top, horizontal }));
+    } catch (err) {}
+  };
+
+  // Estado inicial: posición + orientación guardadas (o vertical a la izquierda).
   let savedPosition: any = null;
   try { savedPosition = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (err) {}
+  if (savedPosition && savedPosition.horizontal) rail.classList.add('rail-horizontal');
+  setOrientIcon(isHorizontal());
   requestAnimationFrame(() => {
     if (savedPosition && typeof savedPosition.left === 'number') positionRail(savedPosition.left, savedPosition.top);
     else positionRail(12, Math.max(12, (container.clientHeight - rail.offsetHeight) / 2));
+  });
+
+  // Alternar orientación: cambia la clase, actualiza icono, re-encaja y guarda.
+  orient && orient.addEventListener('click', event => {
+    event.stopPropagation();
+    const horizontal = rail.classList.toggle('rail-horizontal');
+    setOrientIcon(horizontal);
+    requestAnimationFrame(() => {
+      const pos = positionRail(parseFloat(rail.style.left) || 0, parseFloat(rail.style.top) || 0);
+      save(pos.left, pos.top, horizontal);
+    });
   });
 
   let dragging = false, grabOffsetX = 0, grabOffsetY = 0;
@@ -60,10 +92,7 @@ export function initRailDrag(): void {
     dragging = false;
     rail.classList.remove('rail-dragging');
     try { handle.releasePointerCapture(event.pointerId); } catch (err) {}
-    try {
-      localStorage.setItem(STORAGE_KEY,
-        JSON.stringify({ left: parseFloat(rail.style.left), top: parseFloat(rail.style.top) }));
-    } catch (err) {}
+    save(parseFloat(rail.style.left), parseFloat(rail.style.top), isHorizontal());
   };
   handle.addEventListener('pointerup', end);
   handle.addEventListener('pointercancel', end);

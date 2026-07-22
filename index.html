@@ -12,23 +12,11 @@
   <!-- ══════════════════ TOOLBAR ══════════════════ -->
   <div class="saf-toolbar" id="toolbar">
 
-    <!-- ── Grupo: Archivo ── -->
-    <div class="tb-dropdown-wrap">
-      <button class="tb-btn tb-dropdown-btn" id="btn-archivo" title="Archivo">
-        <i data-lucide="folder-open"></i> <span class="tb-caret"><i data-lucide="chevron-down"></i></span>
-      </button>
-      <div class="tb-dropdown" id="dropdown-archivo">
-        <button class="tb-drop-item" id="btn-download-doc" disabled><i data-lucide="download"></i> Descargar documento</button>
-      </div>
-    </div>
-
     <!-- Inputs ocultos -->
     <input type="file" id="file-input"    accept=".pdf"        hidden>
     <input type="file" id="session-input" accept=".json"       hidden>
     <input type="file" id="xfdf-input"    accept=".xfdf,.xml" hidden>
     <input type="file" id="compare-input" accept=".pdf"        hidden>
-
-    <div class="tb-sep"></div>
 
     <!-- ── Zoom ── -->
     <button class="tb-btn tb-icon" id="btn-zoom-out" disabled title="Alejar"><i data-lucide="minus"></i></button>
@@ -70,9 +58,8 @@
     <button class="tb-btn tb-icon" id="btn-toggle-panel"
             title="Mostrar / ocultar panel de propiedades  (tecla P)"><i data-lucide="panel-right"></i></button>
 
-    <!-- ── Usuario actual + filtro de autores ── -->
-    <div class="tb-sep"></div>
-    <div class="tb-dropdown-wrap" id="users-wrap">
+    <!-- ── Usuario conectado (a la izquierda de Guardar) ── -->
+    <div class="tb-dropdown-wrap tb-push-right" id="users-wrap">
       <button class="tb-btn tb-dropdown-btn" id="btn-users"
               title="Colaboradores en este plano">
         <span class="user-dot" id="user-dot"></span>
@@ -88,6 +75,10 @@
       </div>
     </div>
 
+    <!-- ── Guardar / Descargar (derecha) — se mostrarán según permisos ── -->
+    <button class="tb-btn tb-btn-save" id="btn-save-marks" disabled title="Guardar marcas"><i data-lucide="save"></i> Guardar</button>
+    <button class="tb-btn tb-btn-save" id="btn-download-doc" disabled title="Descargar documento"><i data-lucide="download"></i> Descargar</button>
+
     <!-- Estado (derecha) -->
     <span class="tb-status" id="tb-status">Sin documento</span>
   </div>
@@ -98,6 +89,8 @@
     <!-- ── Riel de herramientas (estilo Procore) ── -->
     <div class="tool-rail" id="tool-rail">
       <div class="rail-drag" id="rail-drag" title="Arrastra para mover la barra"><i data-lucide="grip-horizontal"></i></div>
+      <button class="rail-orient-btn" id="rail-orient" title="Cambiar orientación (horizontal / vertical)"><i data-lucide="arrow-left-right"></i></button>
+      <div class="rail-sep"></div>
       <button class="tb-btn tb-tool tb-btn-active" data-tool="select" title="Seleccionar (V)"><i data-lucide="mouse-pointer-2"></i></button>
       <button class="tb-btn tb-tool"               data-tool="pan"    title="Mover vista (H)"><i data-lucide="hand"></i></button>
       <button class="tb-btn tb-tool"               data-tool="eraser" title="Borrador (E)"><i data-lucide="eraser"></i></button>
@@ -118,6 +111,7 @@
           <button class="tb-drop-item tb-tool" data-tool="highlight"><i data-lucide="highlighter"></i> Resaltado</button>
           <button class="tb-drop-item tb-tool" data-tool="freehand"><i data-lucide="pencil"></i> Dibujo libre <span class="tb-drop-kbd">D</span></button>
           <button class="tb-drop-item tb-tool" data-tool="cloud"><i data-lucide="cloud"></i> Nube de revisión</button>
+          <button class="tb-drop-item" id="btn-tool-cloud-rfi"><i data-lucide="cloud"></i> Nube RFI <span class="tb-drop-kbd">RFI</span></button>
           <div class="tb-drop-sep"></div>
           <button class="tb-drop-item tb-tool" data-tool="text"><i data-lucide="type"></i> Texto <span class="tb-drop-kbd">T</span></button>
           <button class="tb-drop-item tb-tool" data-tool="note"><i data-lucide="sticky-note"></i> Nota post-it <span class="tb-drop-kbd">N</span></button>
@@ -222,56 +216,85 @@
     <button id="btn-compare-close" title="Cerrar comparación"><i data-lucide="x"></i></button>
   </div>
 
+  <!-- Toast de guardado (éxito / error / en progreso) -->
+  <div class="save-toast" id="save-toast" role="status" aria-live="polite">
+    <span class="save-toast-ic" id="save-toast-ic"></span>
+    <span class="save-toast-msg" id="save-toast-msg"></span>
+  </div>
+
 </div><!-- .saf-app -->
 
 <!-- ══════════════════ MODAL: Calibrar escala ══════════════════ -->
-<div class="modal-overlay" id="modal-calibrate" style="display:none">
-  <div class="modal-box">
-    <h3>📐 Calibrar Escala</h3>
+<div class="modal-overlay modal-pick" id="modal-calibrate" style="display:none">
+  <div class="modal-box cal-box">
 
-    <!-- Tabs -->
+    <!-- Cabecera -->
+    <div class="cal-head">
+      <span class="cal-head-title"><span class="cal-head-ic">📐</span> Calibrar escala</span>
+    </div>
+
+    <!-- Tabs tipo segmento -->
     <div class="cal-tabs">
-      <button class="cal-tab cal-tab-active" id="btn-cal-tab-points">📍 2 Puntos</button>
-      <button class="cal-tab" id="btn-cal-tab-direct">✏️ Directo</button>
+      <button class="cal-tab cal-tab-active" id="btn-cal-tab-points"><i data-lucide="ruler"></i> Medir 2 puntos</button>
+      <button class="cal-tab" id="btn-cal-tab-direct"><i data-lucide="type"></i> Escala directa</button>
     </div>
 
     <!-- ── Modo: 2 puntos ── -->
     <div id="cal-mode-points">
-      <p>Haz clic en dos puntos del plano cuya distancia real conoces.</p>
-      <div id="cal-step-1"><p class="modal-hint">🖱 Clic en el <strong>primer punto</strong> de referencia.</p></div>
-      <div id="cal-step-2" style="display:none"><p class="modal-hint">🖱 Clic en el <strong>segundo punto</strong>.</p></div>
-      <div id="cal-step-3" style="display:none">
-        <div class="modal-row">
-          <label>Distancia real:</label>
-          <input type="number" id="cal-value" placeholder="ej: 5.00" min="0.001" step="any">
-          <select id="cal-unit">
-            <option value="m">m</option><option value="cm">cm</option>
-            <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
-          </select>
+      <!-- Indicador de pasos -->
+      <div class="cal-steps" id="cal-steps">
+        <span class="cal-step-chip" data-step="1"><span class="cal-step-n">1</span> Punto A</span>
+        <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
+        <span class="cal-step-chip" data-step="2"><span class="cal-step-n">2</span> Punto B</span>
+        <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
+        <span class="cal-step-chip" data-step="3"><span class="cal-step-n">3</span> Distancia</span>
+      </div>
+
+      <div id="cal-step-1" class="cal-panel"><p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Haz clic en el <strong>primer punto</strong> de referencia sobre el plano.</p></div>
+      <div id="cal-step-2" class="cal-panel" style="display:none"><p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Ahora haz clic en el <strong>segundo punto</strong>.</p></div>
+      <div id="cal-step-3" class="cal-panel" style="display:none">
+        <p class="cal-measured" id="cal-px-hint"></p>
+        <div class="cal-field">
+          <label for="cal-value">Distancia real entre esos puntos</label>
+          <div class="cal-input-row">
+            <input type="number" id="cal-value" placeholder="ej: 5.00" min="0.001" step="any">
+            <select id="cal-unit" class="cal-select">
+              <option value="m">m</option><option value="cm">cm</option>
+              <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
+            </select>
+          </div>
         </div>
-        <p class="modal-hint" id="cal-px-hint"></p>
+        <button class="cal-reset" id="btn-cal-reset"><i data-lucide="rotate-ccw"></i> Volver a marcar los puntos</button>
       </div>
     </div>
 
     <!-- ── Modo: directo ── -->
     <div id="cal-mode-direct" style="display:none">
-      <p>Ingresa la equivalencia directamente, sin hacer clic en el plano.</p>
-      <div class="modal-row">
-        <label>Distancia:</label>
-        <input type="number" id="cal-px-direct" placeholder="px" min="1" step="any" style="width:72px">
-        <span style="color:var(--text-muted);font-size:12px">px =</span>
-        <input type="number" id="cal-val-direct" placeholder="valor" min="0.001" step="any">
-        <select id="cal-unit-direct">
-          <option value="m">m</option><option value="cm">cm</option>
-          <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
-        </select>
+      <p class="cal-desc">Ingresa la equivalencia directamente, sin marcar el plano.</p>
+      <div class="cal-field">
+        <label>Equivalencia píxeles → distancia real</label>
+        <div class="cal-input-row cal-direct-row">
+          <input type="number" id="cal-px-direct" placeholder="px" min="1" step="any">
+          <span class="cal-eq">px&nbsp;=</span>
+          <input type="number" id="cal-val-direct" placeholder="valor" min="0.001" step="any">
+          <select id="cal-unit-direct" class="cal-select">
+            <option value="m">m</option><option value="cm">cm</option>
+            <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
+          </select>
+        </div>
       </div>
-      <p class="modal-hint" id="cal-direct-preview" style="min-height:34px"></p>
+      <p class="cal-direct-hidden" id="cal-direct-preview"></p>
+    </div>
+
+    <!-- Vista previa del resultado (compartida) -->
+    <div class="cal-result" id="cal-result" style="display:none">
+      <span class="cal-result-label"><i data-lucide="check"></i> Escala resultante</span>
+      <span class="cal-result-value" id="cal-result-value">—</span>
     </div>
 
     <div class="modal-actions">
       <button class="tb-btn" id="btn-cal-cancel">Cancelar</button>
-      <button class="tb-btn tb-btn-primary" id="btn-cal-apply" disabled>Aplicar</button>
+      <button class="tb-btn tb-btn-primary" id="btn-cal-apply" disabled>Aplicar escala</button>
     </div>
   </div>
 </div>
@@ -324,11 +347,13 @@
   <div class="modal-card plano-pick-card">
     <div class="modal-head">
       <span>🔗 Elegir plano destino</span>
-      <button class="ap-close" id="btn-plano-close" title="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <input type="text" id="plano-search" class="plano-search" placeholder="Buscar por número, descripción…" autocomplete="off">
     <div class="plano-list" id="plano-list">
       <div class="plano-empty">Cargando planos…</div>
+    </div>
+    <div class="modal-actions">
+      <button class="tb-btn" id="btn-plano-close">Cancelar</button>
     </div>
   </div>
 </div>
@@ -351,11 +376,13 @@
   <div class="modal-card plano-pick-card">
     <div class="modal-head">
       <span>📋 Elegir RFI</span>
-      <button class="ap-close" id="btn-rfi-close" title="Cerrar"><i data-lucide="x"></i></button>
     </div>
     <input type="text" id="rfi-search" class="plano-search" placeholder="Buscar RFI…" autocomplete="off">
     <div class="plano-list" id="rfi-list">
       <div class="plano-empty">Cargando RFIs…</div>
+    </div>
+    <div class="modal-actions">
+      <button class="tb-btn" id="btn-rfi-close">Cancelar</button>
     </div>
   </div>
 </div>
@@ -433,7 +460,7 @@
     </div>
 
     <!-- ── Texto en la figura ── -->
-    <div class="ap-section">
+    <div class="ap-section" id="ap-text-section">
       <div class="ap-section-label">Texto en la figura</div>
       <div class="ap-field">
         <input type="text" id="ap-label" placeholder="Escribe una etiqueta…  (o doble clic en la figura)" maxlength="120">
@@ -441,7 +468,7 @@
     </div>
 
     <!-- ── Apariencia ── -->
-    <div class="ap-section">
+    <div class="ap-section" id="ap-appearance-section">
       <div class="ap-section-label">Apariencia</div>
       <div class="ap-style-row">
         <label class="ap-style-color">Trazo<input type="color" id="ap-stroke"></label>

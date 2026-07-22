@@ -13,11 +13,16 @@ export class ScaleManager {
   /** Píxeles por unidad real (null = sin calibrar) */
   pxPerUnit: number | null;
   unit: string;
+  /** Parámetros crudos de la calibración (para persistir/parametrizar) */
+  pxDistance: number | null;
+  realValue: number | null;
   private _listeners: ScaleListener[];
 
   constructor() {
     this.pxPerUnit = null;
     this.unit = 'm';
+    this.pxDistance = null;
+    this.realValue = null;
     this._listeners = [];
   }
 
@@ -28,12 +33,16 @@ export class ScaleManager {
     if (pxDistance <= 0 || realValue <= 0) return false;
     this.pxPerUnit = pxDistance / realValue;
     this.unit = unit || 'm';
+    this.pxDistance = pxDistance;
+    this.realValue = realValue;
     this._notify();
     return true;
   }
 
   reset(): void {
     this.pxPerUnit = null;
+    this.pxDistance = null;
+    this.realValue = null;
     this._notify();
   }
 

@@ -14,14 +14,15 @@ export function closeAllDropdowns(): void {
 /** Abre `dd` posicionado respecto a su botón activador `anchorBtn`. */
 export function openDropdown(dd: HTMLElement, anchorBtn: HTMLElement): void {
   closeAllDropdowns();
-  const r      = anchorBtn.getBoundingClientRect();
-  const inRail = !!anchorBtn.closest('.tool-rail');
-  if (inRail) {
-    // Flyout a la derecha del riel
+  const r        = anchorBtn.getBoundingClientRect();
+  const rail     = anchorBtn.closest('.tool-rail');
+  const railSide = rail && !rail.classList.contains('rail-horizontal');
+  if (railSide) {
+    // Riel vertical → flyout a la derecha del botón
     dd.style.top  = r.top + 'px';
     dd.style.left = (r.right + 6) + 'px';
   } else {
-    // Desplegable debajo del botón (barra superior)
+    // Barra superior o riel horizontal → desplegable debajo del botón
     dd.style.top  = (r.bottom + 4) + 'px';
     dd.style.left = r.left + 'px';
   }

@@ -84,7 +84,7 @@ import { createListPicker } from './features/list-picker';
   const presenceByUser = new Map();
 
   /* ── Estado ───────────────────────────────────────────────────────── */
-  const session = { docId:null, docName:'', pages:{}, pageHeights:{}, scale:null };
+  const session = { docId:null, docName:'', pages:{}, pageHeights:{}, scale:null, rotation:0 };
   let currentPage   = 1;
   let totalPages    = 0;
   let markupVisible = true;
@@ -122,6 +122,9 @@ import { createListPicker } from './features/list-picker';
     emptyState   : $('empty-state'),
     canvasWrapper: $('canvas-wrapper'),
     drawHint     : $('draw-hint'),
+    saveToast    : $('save-toast'),
+    saveToastIc  : $('save-toast-ic'),
+    saveToastMsg : $('save-toast-msg'),
     areaPanel    : $('area-panel'),
     areaValue    : $('area-value'),
     // Calibración
@@ -142,6 +145,10 @@ import { createListPicker } from './features/list-picker';
     calValDirect    : $('cal-val-direct'),
     calUnitDirect   : $('cal-unit-direct'),
     calDirectPreview: $('cal-direct-preview'),
+    calSteps        : $('cal-steps'),
+    calResult       : $('cal-result'),
+    calResultValue  : $('cal-result-value'),
+    btnCalReset     : $('btn-cal-reset'),
     // Sello
     modalStamp    : $('modal-stamp'),
     btnStampCancel: $('btn-stamp-cancel'),
@@ -180,6 +187,10 @@ import { createListPicker } from './features/list-picker';
 
   /* ── RFI: selector (modal) + drawer en APEX ────────────────────────── */
 
+  // Cuando está activo, la próxima nube colocada abrirá la modal para vincular un RFI.
+  let pendingRfiCloud = false;
+  const RFI_CLOUD_COLOR = '#e1251b';   // rojo fijo de las nubes RFI
+
   /** Selector de RFI — mismo modal/estilo que el de hipervínculos (list-picker). */
   const rfiPicker = createListPicker({
     ids: { modal: 'modal-rfi', search: 'rfi-search', list: 'rfi-list', close: 'btn-rfi-close' },
@@ -199,6 +210,10 @@ import { createListPicker } from './features/list-picker';
       if (!target) return;
       target.data = Object.assign(target.data || {}, { rfiId: id, rfiLabel: label });
       if (activeAnnotationObject === target) $('ap-rfi-name').textContent = label;
+      // Nube RFI: escribir "RFI <número>" dentro de la nube
+      if (target.data?.type === 'cloud' && markup) {
+        markup.setCloudLabel(target, `RFI ${id}`);
+      }
       markup && markup._snapshot();
       markup && markup._notifyLocalChange && markup._notifyLocalChange();
       openRfiDrawer(id);   // al elegir, abre el drawer
@@ -231,6 +246,7 @@ import { createListPicker } from './features/list-picker';
   /* ── Activar herramienta ─────────────────────────────────────────── */
   function activateTool(tool) {
     if (!markup) return;
+    pendingRfiCloud = false;   // cualquier cambio de herramienta cancela el modo Nube RFI
     markup.setTool(tool);
     closeAllDropdowns();
 
@@ -305,6 +321,17 @@ import { createListPicker } from './features/list-picker';
     markup.onShowImage   = src  => { $('att-lightbox-img').src = src; $('att-lightbox').style.display = 'flex'; };
     // Doble clic en un sello RFI → avisar a APEX para abrir su drawer de RFIs
     markup.onStampDblClick = (data) => onRfiStampDblClick(data);
+    // Nube RFI: al colocar la nube en modo RFI, abrir la modal para vincular el RFI.
+    // Se difiere al siguiente frame para que primero termine la colocación y el
+    // auto-select de la nube; así la modal abre limpia y con foco en el buscador.
+    markup.onCloudCreated = (obj) => {
+      if (!pendingRfiCloud) return;
+      pendingRfiCloud = false;
+      obj.data = Object.assign(obj.data || {}, { isRfi: true });
+      obj.set({ stroke: RFI_CLOUD_COLOR });   // color rojo fijo por defecto
+      markup.canvas.renderAll();
+      requestAnimationFrame(() => rfiPicker.open(obj));
+    };
     // Colaboración: al cambiar la capa propia → emitir a la sala + persistir
     markup.onLocalChange = ()   => collabSync.pushLocalLayer();
     markup.canvas.on('after:render', updateFigToolbar);   // mini-toolbar sobre la figura
@@ -339,6 +366,16 @@ import { createListPicker } from './features/list-picker';
     getUserId      : () => _currentUserId,
     getRevId       : () => _currentRevId,
     onPresence     : () => buildUsersPanel(),
+    // Restaura la orientación guardada: re-renderiza el fondo con esa rotación
+    // (las marcas ya vienen guardadas en ese espacio de coordenadas).
+    onRotationLoaded: (deg) => {
+      const target = ((deg % 360) + 360) % 360;
+      if (target === rotation) return;
+      rotation = target;
+      goToPage(currentPage);
+    },
+    // Restaura la escala calibrada guardada (pixeles / distancia_real / unidad).
+    onScaleLoaded: (scale) => applyScaleFromSession(scale),
   });
 
   /* ════════════════════════════════════════════════════════════════════
@@ -354,6 +391,7 @@ import { createListPicker } from './features/list-picker';
       session.pages       = {};
       session.pageHeights = {};
       rotation            = 0;             // cada documento arranca sin rotar
+      session.rotation    = 0;             // (se restaura desde el servidor si existe)
       collabSync.reset();
       ui.emptyState.style.display    = 'none';
       ui.canvasWrapper.style.display = 'flex';
@@ -386,6 +424,7 @@ import { createListPicker } from './features/list-picker';
       session.pages       = {};
       session.pageHeights = {};
       rotation            = 0;             // cada documento arranca sin rotar
+      session.rotation    = 0;             // (se restaura desde el servidor si existe)
       collabSync.reset();
       ui.emptyState.style.display    = 'none';
       ui.canvasWrapper.style.display = 'flex';
@@ -432,11 +471,13 @@ import { createListPicker } from './features/list-picker';
   async function rotateDocument(clockwise = true) {
     if (!pdfRenderer.isLoaded || !markup) return;
     rotation = (rotation + (clockwise ? 90 : 270)) % 360;
+    session.rotation = rotation;        // se guardará al pulsar Guardar
     markup.rotateContent(clockwise);   // gira las marcas usando las dimensiones lógicas ACTUALES (previas)
     setStatus('Rotando…');
     const r = await pdfRenderer.renderPage(currentPage, PDF_RENDER_SUPERSAMPLE, rotation);
     session.pageHeights[currentPage] = r.logicalHeight;
     await markup.setBackground(r.dataUrl, r.imageWidth, r.imageHeight, r.logicalWidth, r.logicalHeight);
+    collabSync.pushLocalLayer();        // sincroniza en vivo con los colaboradores (no persiste)
     setStatus('');
   }
 
@@ -457,9 +498,9 @@ import { createListPicker } from './features/list-picker';
   function saveSession() {
     if (!markup) return;
     session.pages[currentPage] = markup.getMarkupJSON();
-    if (scaleManager.isCalibrated())
-      session.scale = { pxPerUnit:scaleManager.pxPerUnit, unit:scaleManager.unit };
-    const data = { version:3, docName:session.docName, pages:session.pages, pageHeights:session.pageHeights, scale:session.scale };
+    session.rotation = rotation;
+    if (scaleManager.isCalibrated()) session.scale = buildScaleObj();
+    const data = { version:3, docName:session.docName, pages:session.pages, pageHeights:session.pageHeights, scale:session.scale, rotation:session.rotation||0 };
     storage.downloadJSON(data, `saf-markup-${session.docName.replace(/\.pdf$/i,'')}-${Date.now()}.json`);
     storage.saveSession(data);
     setStatus('Sesión JSON guardada ✓');
@@ -469,9 +510,14 @@ import { createListPicker } from './features/list-picker';
     try {
       const data = await storage.readJSONFile(file);
       if (!data.pages) throw new Error('Formato inválido');
-      Object.assign(session, { docName:data.docName||session.docName, pages:data.pages||{}, pageHeights:data.pageHeights||{}, scale:data.scale||null });
-      if (data.scale?.pxPerUnit) { scaleManager.pxPerUnit=data.scale.pxPerUnit; scaleManager.unit=data.scale.unit; updateScaleBadge(); }
-      if (markup && pdfRenderer.isLoaded) { markup.setMarkupJSON(session.pages[currentPage]||null); buildUsersPanel(); setStatus('Sesión JSON cargada ✓'); }
+      Object.assign(session, { docName:data.docName||session.docName, pages:data.pages||{}, pageHeights:data.pageHeights||{}, scale:data.scale||null, rotation:data.rotation||0 });
+      applyScaleFromSession(data.scale);
+      if (markup && pdfRenderer.isLoaded) {
+        rotation = ((session.rotation % 360) + 360) % 360;
+        markup.setMarkupJSON(session.pages[currentPage]||null);
+        if (rotation) goToPage(currentPage);   // re-renderiza el fondo con la orientación guardada
+        buildUsersPanel(); setStatus('Sesión JSON cargada ✓');
+      }
       else setStatus('Sesión cargada. Abre el PDF correspondiente.');
     } catch (e) { alert('Error al cargar sesión: '+e.message); }
   }
@@ -516,6 +562,34 @@ import { createListPicker } from './features/list-picker';
   let calibrationPoint1      = null, calibrationPoint2 = null;
   let calibrationListener = null;
 
+  /** Marca el chip de paso activo/completado (1..3) en el indicador visual. */
+  function setCalStep(step) {
+    if (!ui.calSteps) return;
+    ui.calSteps.querySelectorAll('.cal-step-chip').forEach(chip => {
+      const n = Number(chip.getAttribute('data-step'));
+      chip.classList.toggle('is-active', n === step);
+      chip.classList.toggle('is-done',   n <  step);
+    });
+  }
+
+  /** Reinicia el flujo de 2 puntos (sin cerrar la modal). */
+  function resetPointsFlow() {
+    calibrationState = 1; calibrationPoint1 = calibrationPoint2 = null;
+    ui.calStep1.style.display='block';
+    ui.calStep2.style.display='none';
+    ui.calStep3.style.display='none';
+    ui.calValue.value='';
+    ui.calResult.style.display='none';
+    ui.btnCalApply.disabled = true;
+    setCalStep(1);
+    if (window.calibrationLine && markup) {
+      markup.canvas.remove(window.calibrationLine);
+      window.calibrationLine = null;
+      markup.canvas.renderAll();
+    }
+    addCalibrationListener();
+  }
+
   function switchCalTab(mode) {
     calibrationMode = mode;
     const isPoints = (mode === 'points');
@@ -524,22 +598,16 @@ import { createListPicker } from './features/list-picker';
     ui.calModeDirect.style.display = isPoints ? 'none'  : 'block';
     ui.btnCalTabPoints.classList.toggle('cal-tab-active',  isPoints);
     ui.btnCalTabDirect.classList.toggle('cal-tab-active', !isPoints);
+    ui.calResult.style.display = 'none';
 
-    // En modo puntos, el overlay deja pasar los clics al canvas (panel a la esquina);
-    // en modo directo es un modal centrado normal.
-    ui.modalCal.classList.toggle('modal-pick', isPoints);
-
+    // La modal siempre queda anclada (clase modal-pick fija en el HTML): no salta
+    // al cambiar de pestaña. En modo puntos el cursor es de mira sobre el canvas.
     if (isPoints) {
-      // Reiniciar flujo 2-puntos
-      calibrationState = 1; calibrationPoint1 = calibrationPoint2 = null;
-      ui.calStep1.style.display='block';
-      ui.calStep2.style.display='none';
-      ui.calStep3.style.display='none';
-      ui.btnCalApply.disabled = true;
-      addCalibrationListener();
+      resetPointsFlow();
     } else {
       removeCalibrationListener();
       if (markup) markup.canvas.defaultCursor = 'default';
+      ui.btnCalApply.disabled = true;
       updateDirectPreview();
     }
   }
@@ -554,13 +622,16 @@ import { createListPicker } from './features/list-picker';
         calibrationPoint1=ptr; calibrationState=2;
         ui.calStep1.style.display='none';
         ui.calStep2.style.display='block';
+        setCalStep(2);
       } else if (calibrationState === 2) {
         calibrationPoint2=ptr; calibrationState=3;
         const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
-        ui.calPxHint.textContent = `Distancia medida: ${px.toFixed(1)} px`;
+        ui.calPxHint.innerHTML = `Distancia medida: <b>${px.toFixed(1)} px</b>`;
         ui.calStep2.style.display='none';
         ui.calStep3.style.display='block';
-        ui.btnCalApply.disabled = false;
+        setCalStep(3);
+        ui.calValue.focus();
+        updatePointsPreview();       // aún sin distancia real → Aplicar deshabilitado
         if (window.calibrationLine) markup.canvas.remove(window.calibrationLine);
         window.calibrationLine = new fabric.Line(
           [calibrationPoint1.x,calibrationPoint1.y,calibrationPoint2.x,calibrationPoint2.y],
@@ -583,7 +654,7 @@ import { createListPicker } from './features/list-picker';
     ui.calValue.value='';
     ui.calPxDirect.value='';
     ui.calValDirect.value='';
-    ui.calDirectPreview.textContent='';
+    ui.calResult.style.display='none';
     ui.btnCalApply.disabled=true;
     // Neutralizar la herramienta para que clicar puntos no dibuje ni seleccione
     if (markup) activateTool('select');
@@ -591,16 +662,33 @@ import { createListPicker } from './features/list-picker';
     ui.modalCal.style.display='flex';
   }
 
+  /** Muestra la escala resultante en la caja de resultado. */
+  function showCalResult(pxPerUnit, unit) {
+    ui.calResultValue.textContent = `1 ${unit} = ${pxPerUnit.toFixed(2)} px`;
+    ui.calResult.style.display = 'flex';
+  }
+
+  /** Modo 2 puntos: recalcula la vista previa cuando cambia la distancia real. */
+  function updatePointsPreview() {
+    const val = parseFloat(ui.calValue.value);
+    if (calibrationPoint2 && val > 0) {
+      const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
+      showCalResult(px / val, ui.calUnit.value);
+      ui.btnCalApply.disabled = false;
+    } else {
+      ui.calResult.style.display = 'none';
+      ui.btnCalApply.disabled = true;
+    }
+  }
+
   function updateDirectPreview() {
     const px  = parseFloat(ui.calPxDirect.value);
     const val = parseFloat(ui.calValDirect.value);
-    const unit = ui.calUnitDirect.value;
     if (px>0 && val>0) {
-      const pxPerUnit = px / val;
-      ui.calDirectPreview.textContent = `→ 1 ${unit} = ${pxPerUnit.toFixed(2)} px`;
+      showCalResult(px / val, ui.calUnitDirect.value);
       ui.btnCalApply.disabled = false;
     } else {
-      ui.calDirectPreview.textContent = '';
+      ui.calResult.style.display = 'none';
       ui.btnCalApply.disabled = true;
     }
   }
@@ -611,6 +699,8 @@ import { createListPicker } from './features/list-picker';
       const val = parseFloat(ui.calValDirect.value);
       if (!px||px<=0||!val||val<=0) { alert('Ingresa valores mayores a 0'); return; }
       scaleManager.calibrate(px, val, ui.calUnitDirect.value);
+      session.scale = buildScaleObj();     // queda listo para guardar (botón Guardar)
+      collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
       closeCalibrate();
       updateScaleBadge();
       setStatus(`Escala: 1 ${ui.calUnitDirect.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
@@ -620,6 +710,8 @@ import { createListPicker } from './features/list-picker';
       if (!val||val<=0) { alert('Ingresa un valor mayor a 0'); return; }
       const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
       scaleManager.calibrate(px, val, ui.calUnit.value);
+      session.scale = buildScaleObj();     // queda listo para guardar (botón Guardar)
+      collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
       closeCalibrate();
       updateScaleBadge();
       setStatus(`Escala: 1 ${ui.calUnit.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
@@ -745,6 +837,21 @@ import { createListPicker } from './features/list-picker';
   let _currentUserId   = null;   // id numérico del usuario (USUARIO_GRABACION) si APEX lo envía
   let _currentRevId    = null;   // id de la revisión del plano (ID_REVISIONES_PLANO) opcional
   let _codigoProyecto  = null;   // P9130008_CODIGO_PROYECTO — filtra planos-listado y rfi-listado
+  let _canCollaborate  = false;  // P0_PERMISO_COLABORADOR === '1' → puede guardar marcas y descargar
+
+  /** Normaliza el valor del permiso de colaborador (APEX) a booleano. */
+  function setCollabPermission(value) {
+    _canCollaborate = String(value ?? '').trim() === '1';
+    applyCollabPermission();
+  }
+
+  /** Muestra/oculta los botones Guardar y Descargar según el permiso. */
+  function applyCollabPermission() {
+    ['btn-save-marks', 'btn-download-doc'].forEach(id => {
+      const b = $(id);
+      if (b) b.style.display = _canCollaborate ? '' : 'none';
+    });
+  }
 
   /** Cambia el usuario activo: actualiza markup layer + UI */
   function setCurrentUser(name) {
@@ -882,6 +989,9 @@ import { createListPicker } from './features/list-picker';
   // 3. Descargar documento (PDF + marcas si están visibles)
   $('btn-download-doc') && $('btn-download-doc').addEventListener('click', downloadDocument);
 
+  // 3b. Guardar marcas (persiste la capa propia en el servidor)
+  $('btn-save-marks') && $('btn-save-marks').addEventListener('click', saveMarks);
+
   // 5. Zoom / rotación
   ui.btnZoomIn .addEventListener('click', () => markup&&markup.zoomStep(1));
   ui.btnZoomOut.addEventListener('click', () => markup&&markup.zoomStep(-1));
@@ -892,6 +1002,14 @@ import { createListPicker } from './features/list-picker';
   // 6. Herramientas (toolbar principal + items de dropdown)
   document.querySelectorAll('.tb-tool').forEach(btn => {
     btn.addEventListener('click', () => activateTool(btn.dataset.tool));
+  });
+
+  // 6b. Nube RFI: activa la nube y marca que, al colocarla, se abra la modal de RFI.
+  // OJO: activateTool() resetea el flag, por eso se activa DESPUÉS de llamarla.
+  $('btn-tool-cloud-rfi') && $('btn-tool-cloud-rfi').addEventListener('click', () => {
+    activateTool('cloud');
+    pendingRfiCloud = true;
+    showHint('Dibuja la nube y elige el RFI a vincular', true);
   });
 
   // 7. Estilos
@@ -924,9 +1042,19 @@ import { createListPicker } from './features/list-picker';
   ui.btnCalCancel   .addEventListener('click', closeCalibrate);
   ui.btnCalTabPoints.addEventListener('click', () => switchCalTab('points'));
   ui.btnCalTabDirect.addEventListener('click', () => switchCalTab('direct'));
+  ui.btnCalReset && ui.btnCalReset.addEventListener('click', resetPointsFlow);
   [ui.calPxDirect, ui.calValDirect, ui.calUnitDirect].forEach(el =>
     el.addEventListener('input', updateDirectPreview)
   );
+  [ui.calValue, ui.calUnit].forEach(el =>
+    el.addEventListener('input', updatePointsPreview)
+  );
+  // Enter aplica (si es válido), Escape cierra la calibración.
+  document.addEventListener('keydown', e => {
+    if (ui.modalCal.style.display !== 'flex') return;
+    if (e.key === 'Escape') { closeCalibrate(); }
+    else if (e.key === 'Enter' && !ui.btnCalApply.disabled) { applyCalibration(); }
+  });
 
   // 11. Eliminar MIS marcas de esta página (con modal de confirmación propia)
   ui.btnClear && ui.btnClear.addEventListener('click', () => {
@@ -947,8 +1075,86 @@ import { createListPicker } from './features/list-picker';
   });
 
   // 12. Descargar documento — PNG de la página (con marcas si están visibles)
+  /** Escala parametrizada para persistir: píxeles medidos, distancia real y unidad. */
+  function buildScaleObj() {
+    if (!scaleManager.isCalibrated()) return null;
+    return {
+      pxPerUnit      : scaleManager.pxPerUnit,   // derivado (para los cálculos)
+      pixeles        : scaleManager.pxDistance,  // píxeles medidos en el plano
+      distancia_real : scaleManager.realValue,   // distancia real ingresada
+      unidad         : scaleManager.unit,        // unidad de medida (m, cm, …)
+      ts             : Date.now(),               // hora de calibración → gana la más reciente
+    };
+  }
+
+  /** Restaura la escala desde la sesión guardada (server o archivo). */
+  function applyScaleFromSession(scale) {
+    if (!scale) return;
+    const px   = scale.pixeles ?? null;
+    const real = scale.distancia_real ?? null;
+    const unit = scale.unidad || scale.unit || 'm';
+    if (px > 0 && real > 0) {
+      scaleManager.calibrate(px, real, unit);   // reconstruye desde los parámetros crudos
+    } else if (scale.pxPerUnit) {
+      scaleManager.pxPerUnit = scale.pxPerUnit; // compatibilidad con guardados antiguos
+      scaleManager.unit      = unit;
+    }
+    updateScaleBadge();
+  }
+
+  /* ── Toast de guardado ─────────────────────────────────────────────── */
+  let saveToastTimer = null;
+  /**
+   * Muestra el toast de guardado.
+   * @param {'loading'|'success'|'error'} state
+   * @param {string} msg   texto a mostrar
+   * @param {number} hideAfter  ms hasta ocultar (0 = no auto-ocultar; para 'loading')
+   */
+  function showSaveToast(state, msg, hideAfter = 0) {
+    if (!ui.saveToast) return;
+    if (saveToastTimer) { clearTimeout(saveToastTimer); saveToastTimer = null; }
+    ui.saveToast.classList.remove('is-loading', 'is-success', 'is-error');
+    ui.saveToast.classList.add('is-' + state, 'is-visible');
+    ui.saveToastMsg.textContent = msg;
+    // Ícono: el spinner de 'loading' es puramente CSS (sin SVG)
+    if (state === 'loading') {
+      ui.saveToastIc.innerHTML = '';
+    } else {
+      ui.saveToastIc.innerHTML = `<i data-lucide="${state === 'success' ? 'check' : 'alert-triangle'}"></i>`;
+      renderIcons(ui.saveToastIc);
+    }
+    if (hideAfter > 0) saveToastTimer = setTimeout(hideSaveToast, hideAfter);
+  }
+  function hideSaveToast() {
+    if (!ui.saveToast) return;
+    ui.saveToast.classList.remove('is-visible');
+    if (saveToastTimer) { clearTimeout(saveToastTimer); saveToastTimer = null; }
+  }
+
+  /** Guarda TODO explícitamente (solo al pulsar Guardar): marcas, rotación y escala. */
+  async function saveMarks() {
+    if (!markup) return;
+    if (!_canCollaborate) { showSaveToast('error', 'No tienes permiso para guardar', 3000); return; }
+    session.pages[currentPage]       = markup.getMarkupJSON();
+    session.pageHeights[currentPage] = markup.getPageHeight();
+    session.rotation                 = rotation;
+    session.scale                    = buildScaleObj();
+    if (session.docId == null) {     // archivo local (sin sala): no hay servidor donde guardar
+      showSaveToast('error', 'Sin servidor: usa Descargar para exportar', 3000);
+      return;
+    }
+    const btn = $('btn-save-marks');
+    if (btn) btn.disabled = true;    // evita doble clic durante el guardado
+    showSaveToast('loading', 'Guardando…');
+    const ok = await collabSync.saveNow();
+    if (btn) btn.disabled = false;
+    if (ok) showSaveToast('success', 'Cambios guardados', 3000);
+    else    showSaveToast('error',   'No se pudo guardar. Reintenta.', 3000);
+  }
+
   function downloadDocument() {
     if (!markup) return;
+    if (!_canCollaborate) { showHint('No tienes permiso para descargar'); return; }
     closeAllDropdowns();
     let dataUrl;
     try {
@@ -1234,6 +1440,9 @@ import { createListPicker } from './features/list-picker';
     if (e.data.codigo_proyecto != null && String(e.data.codigo_proyecto).trim() !== '') {
       _codigoProyecto = String(e.data.codigo_proyecto).trim();
     }
+    // Permiso de colaborador (P0_PERMISO_COLABORADOR): APEX puede enviarlo en cualquier mensaje
+    const permMsg = e.data.P0_PERMISO_COLABORADOR ?? e.data.permiso_colaborador ?? e.data.permiso;
+    if (permMsg != null) setCollabPermission(permMsg);
     if (e.data.action === 'setUser') {
       if (e.data.name) setCurrentUser(e.data.name);
       // Código de usuario (USUARIO_GRABACION) — APEX puede mandarlo por postMessage
@@ -1262,6 +1471,27 @@ import { createListPicker } from './features/list-picker';
       disableOpenControls();   // APEX abre el plano → modo embebido sin "Abrir PDF"
       if (e.data.repoId != null) openPDFFromRepo(e.data.repoId, e.data.name);
       else if (e.data.pdfUrl)    openPDFFromUrl(e.data.pdfUrl, e.data.docId, e.data.name);
+    }
+
+    // Mensaje de inicialización consolidado: identidad + proyecto + permiso + abrir plano.
+    // (codigo_proyecto y P0_PERMISO_COLABORADOR ya se aplican arriba para cualquier mensaje.)
+    if (e.data.action === 'init') {
+      const d = e.data;
+      const nombreUsuario = d.usuario_conectado || d.usuario || d.name;
+      if (nombreUsuario) setCurrentUser(nombreUsuario);
+      const cod = d.codigo_usuario ?? d.usuario_id ?? d.codigo;
+      if (cod != null && String(cod).trim() !== '') {
+        _currentUserId = /^\d+$/.test(String(cod)) ? Number(cod) : cod;
+        console.info('[SAF] codigo_usuario (init):', _currentUserId);
+      }
+      const rid = d.id_revision ?? d.id_revisiones_plano;
+      if (rid != null && /^\d+$/.test(String(rid))) _currentRevId = Number(rid);
+      // Abrir el plano (por id de repositorio o URL directa)
+      if (d.repoId != null || d.pdfUrl) {
+        disableOpenControls();
+        if (d.repoId != null) openPDFFromRepo(d.repoId, d.nombre || d.name);
+        else                  openPDFFromUrl(d.pdfUrl, d.docId, d.nombre || d.name);
+      }
     }
   });
 
@@ -1300,6 +1530,13 @@ import { createListPicker } from './features/list-picker';
     // Código de proyecto (P9130008_CODIGO_PROYECTO) — filtra planos-listado y rfi-listado
     const cp = (params.get('codigo_proyecto') || params.get('proyecto') || '').trim();
     if (cp) { _codigoProyecto = cp; console.info('[SAF] codigo_proyecto:', _codigoProyecto); }
+
+    // Permiso de colaborador (P0_PERMISO_COLABORADOR): '1' → puede guardar y descargar
+    const perm = params.get('P0_PERMISO_COLABORADOR')
+              ?? params.get('permiso_colaborador')
+              ?? params.get('permiso');
+    setCollabPermission(perm);
+    console.info('[SAF] permiso_colaborador:', _canCollaborate);
 
     if (_currentUserId == null)
       console.warn('[SAF] Sin codigo_usuario: USUARIO_GRABACION se guardará como 0. ' +
@@ -1356,7 +1593,7 @@ import { createListPicker } from './features/list-picker';
   function enableDocs(on) {
     [ui.btnRotateLeft,ui.btnRotateRight,ui.btnZoomIn,ui.btnZoomOut,ui.btnFit,
      ui.btnCalibrate,ui.btnClear,
-     $('btn-download-doc'), $('btn-compare')]
+     $('btn-save-marks'), $('btn-download-doc'), $('btn-compare')]
      .forEach(el => { if(el) el.disabled=!on; });
     ui.btnUndo.disabled=true; ui.btnRedo.disabled=true;
   }

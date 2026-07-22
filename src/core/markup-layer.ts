@@ -84,6 +84,7 @@ export class MarkupLayer {
     this.onFollowLink  = null;  // (targetPage:number) => void — doble clic en hipervínculo
     this.onShowImage   = null;  // (dataUrl:string) => void — clic en miniatura de adjunto
     this.onStampDblClick = null;// (data, obj) => void — doble clic en un sello (p.ej. RFI)
+    this.onCloudCreated  = null;// (obj) => void — se colocó una nube de revisión
     this.onLocalChange = null;  // () => void — el usuario local cambió SU capa (debounced)
 
     // ── Colaboración en tiempo real ────────────────────────────────────
@@ -467,6 +468,7 @@ export class MarkupLayer {
       if (obj.data?.type === 'link')             this.onFollowLink && this.onFollowLink(obj.data);
       else if (obj.data?.type === 'photo-pin')   { const attachment = this._firstImageAttachment(obj); if (attachment) this.onShowImage && this.onShowImage(attachment.dataUrl); }
       else if (obj.data?.type === 'stamp')       this.onStampDblClick && this.onStampDblClick(obj.data, obj);
+      else if (obj.data?.type === 'cloud' && obj.data?.isRfi) { /* nube RFI: texto fijo, no editable */ }
       else if (obj.data?.type === 'cloud')       this._editCloudLabel(obj);
       else if (this._isLabelable(obj))           this._editLabel(obj);
     });
@@ -982,6 +984,7 @@ export class MarkupLayer {
     });
     obj.data = { type:'cloud', points: pts };
     this._place(obj);
+    this.onCloudCreated && this.onCloudCreated(obj);
   }
 
   /* ── Nube natural (drag o clic simple) ─────────────────────────────── */
@@ -1000,6 +1003,7 @@ export class MarkupLayer {
     const cloudId = `cld-${Date.now().toString(36)}`;
     obj.data = { type: 'cloud', cloudId };
     this._place(obj);
+    this.onCloudCreated && this.onCloudCreated(obj);
 
     // Auto-volver a selección para poder moverla de inmediato
     if (this.onAutoSelect) {
@@ -1157,6 +1161,55 @@ export class MarkupLayer {
     labelObj.enterEditing();
     labelObj.selectAll();
     this.canvas.renderAll();
+  }
+
+  /** Fija el texto de la etiqueta de una nube como FIJO (uso: Nube RFI).
+      La etiqueta queda bloqueada: no seleccionable, no editable, sin eventos.
+      El flag data.locked se reaplica al cargar (ver setMarkupJSON). */
+  setCloudLabel(cloudObj, text) {
+    const cloudId = cloudObj?.data?.cloudId;
+    if (!cloudId) return;
+    const center = cloudObj.getCenterPoint();
+    let labelObj = this.canvas.getObjects().find(
+      o => o.data?.type === 'cloud-label' && o.data?.cloudId === cloudId
+    );
+    const lockedProps = {
+      editable: false, selectable: false, evented: false,
+      hasControls: false, hoverCursor: 'default',
+    };
+    if (!labelObj) {
+      const FONT_SIZE_RATIO = 0.14, FONT_SIZE_BASE = 10;
+      labelObj = new fabric.IText(text, Object.assign({
+        left      : center.x,
+        top       : center.y,
+        originX   : 'center',
+        originY   : 'center',
+        fontSize  : Math.round(Math.min(cloudObj.width, cloudObj.height) * FONT_SIZE_RATIO + FONT_SIZE_BASE),
+        fontFamily: 'Arial',
+        fill      : cloudObj.stroke || this.strokeColor,
+        textAlign : 'center',
+      }, lockedProps));
+      labelObj.data = { type:'cloud-label', cloudId, locked:true, autor:this.currentUser, fecha:new Date().toISOString() };
+      this._skipSnap = true;
+      this.canvas.add(labelObj);
+      this._skipSnap = false;
+    } else {
+      labelObj.data = Object.assign(labelObj.data || {}, { locked: true });
+      labelObj.set(Object.assign({ text, left: center.x, top: center.y }, lockedProps));
+    }
+    labelObj.setCoords();
+    this.canvas.renderAll();
+    this._snapshot();
+    this._notifyLocalChange();
+  }
+
+  /** Reaplica el bloqueo a las etiquetas RFI tras cargar de JSON (selectable/evented no se serializan). */
+  _relockCloudLabels(objs) {
+    (objs || this._markupObjs()).forEach(o => {
+      if (o.data?.type === 'cloud-label' && o.data?.locked) {
+        o.set({ editable:false, selectable:false, evented:false, hasControls:false, hoverCursor:'default' });
+      }
+    });
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -1739,6 +1792,7 @@ export class MarkupLayer {
         this.canvas.add(o);
       });
       enlivened.forEach(o => { if (this._firstImageAttachment(o)) this.refreshThumb(o); });
+      this._relockCloudLabels(enlivened);   // etiquetas RFI: fijas también en capas ajenas
       finish();
     });
   }
@@ -1810,6 +1864,7 @@ export class MarkupLayer {
       enlivened.forEach(o=>this.canvas.add(o));
       // Regenerar miniaturas de figuras que tengan imágenes adjuntas
       enlivened.forEach(o => { if (this._firstImageAttachment(o)) this.refreshThumb(o); });
+      this._relockCloudLabels(enlivened);   // etiquetas RFI: fijas (no editables/seleccionables)
       this._applyAuthorVisibility();   // respetar el filtro de autores ocultos
       this.canvas.renderAll(); this._skipSnap=false;
       this._undoStack=[]; this._redoStack=[];

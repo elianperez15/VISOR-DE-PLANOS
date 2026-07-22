@@ -54,9 +54,14 @@ export class PDFRenderer {
 
     const page = await this._doc.getPage(pageNum);
 
+    // Sumar la rotación de la app a la rotación intrínseca del PDF (/Rotate).
+    // Pasar `rotation` a getViewport la SOBRESCRIBE, así que hay que añadir
+    // page.rotate para respetar la orientación con la que se guardó el archivo.
+    const totalRotation = (((page.rotate || 0) + rotation) % 360 + 360) % 360;
+
     // Tamaño lógico de la página YA rotada (puntos PDF a 1x). Para 90/270 el
     // ancho y alto quedan intercambiados respecto a la orientación original.
-    const base = page.getViewport({ scale: 1, rotation });
+    const base = page.getViewport({ scale: 1, rotation: totalRotation });
 
     // Escala efectiva = supersample × DPR, acotada por el límite de canvas del navegador
     const dpr     = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
@@ -64,7 +69,7 @@ export class PDFRenderer {
     const capByDim = MAX_DIM / Math.max(base.width, base.height);
     const renderScale = Math.max(1, Math.min(supersample * dpr, capByDim));
 
-    const viewport = page.getViewport({ scale: renderScale, rotation });
+    const viewport = page.getViewport({ scale: renderScale, rotation: totalRotation });
 
     const canvas = document.createElement('canvas');
     canvas.width  = Math.floor(viewport.width);
@@ -112,9 +117,12 @@ export class PDFRenderer {
       Math.min(density, MAX_DIM / Math.max(1, rect.w), MAX_DIM / Math.max(1, rect.h)),
     );
 
+    // Misma orientación total que renderPage: intrínseca del PDF + rotación de la app.
+    const totalRotation = (((page.rotate || 0) + rotation) % 360 + 360) % 360;
+
     // El viewport rotado usa el mismo espacio lógico (ya rotado) que rect,
     // por lo que el desplazamiento -rect.x/-rect.y sigue recortando la región.
-    const viewport = page.getViewport({ scale: s, rotation });
+    const viewport = page.getViewport({ scale: s, rotation: totalRotation });
 
     const canvas = document.createElement('canvas');
     canvas.width  = Math.max(1, Math.ceil(rect.w * s));

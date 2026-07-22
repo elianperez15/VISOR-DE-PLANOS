@@ -36,6 +36,7 @@ type Callbacks = {
   onPeerLeave?:  (id: string) => void;
   onDelta?:      (delta: LayerDelta) => void;
   onCursor?:     (cursor: CursorMsg) => void;
+  onScale?:      (scale: any) => void;   // escala calibrada global
 };
 
 export class Collab {
@@ -124,6 +125,12 @@ export class Collab {
     this._send({ t: 'cursor', doc: this.doc, page, x, y });
   }
 
+  /** Difunde la escala calibrada a toda la sala (global). */
+  sendScale(scale: any): void {
+    if (this.doc == null) return;
+    this._send({ t: 'scale', doc: this.doc, scale });
+  }
+
   private _dispatch(message: any): void {
     switch (message.t) {
       case 'peers':      this.cb.onPeers?.(message.peers || []); break;
@@ -131,6 +138,7 @@ export class Collab {
       case 'peer-leave': this.cb.onPeerLeave?.(message.id); break;
       case 'delta':      this.cb.onDelta?.(message as LayerDelta); break;
       case 'cursor':     this.cb.onCursor?.(message as CursorMsg); break;
+      case 'scale':      this.cb.onScale?.(message.scale); break;
     }
   }
 

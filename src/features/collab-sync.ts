@@ -22,22 +22,23 @@ export interface CollabSyncCtx {
   getUserId: () => any;
   getRevId: () => any;
   onPresence: () => void;            // refrescar el panel de colaboradores
+  onRotationLoaded?: (deg: number) => void;   // aplicar la orientación guardada del plano
+  onScaleLoaded?: (scale: any) => void;       // aplicar la escala calibrada guardada
 }
 
 export function createCollabSync(ctx: CollabSyncCtx) {
   // Estado propio de la feature
   const remoteLayers: Record<string, Record<string, string>> = {}; // [page][autor] = json
-  let saveTimer: any = null;
 
-  /** Emite la capa propia de la página actual a la sala y la persiste en ORDS. */
+  /** Emite la capa propia de la página actual a la sala (sincronización en vivo).
+      NO persiste en ORDS: el guardado en servidor ocurre solo al pulsar Guardar. */
   function pushLocalLayer() {
     const markup = ctx.getMarkup();
     if (!markup) return;
     const page = ctx.getCurrentPage(), user = ctx.getUser();
     const json = markup.getLayerJSON(user);
     if (ctx.collab.connected) ctx.collab.sendDelta(page, user, json);
-    ctx.getSession().pages[page] = markup.getMarkupJSON();   // persistencia durable
-    saveLayerToServer();
+    ctx.getSession().pages[page] = markup.getMarkupJSON();   // copia local en memoria
   }
 
   /** Aplica las capas remotas almacenadas para la página indicada. */
@@ -79,6 +80,8 @@ export function createCollabSync(ctx: CollabSyncCtx) {
         if (peer && peer.id) ctx.presence.set(peer.id, peer);
         ctx.onPresence();
         resendMyLayers();   // que el recién llegado vea lo ya dibujado
+        const sc = ctx.getSession().scale;   // y la escala global vigente (aunque no esté guardada)
+        if (sc) ctx.collab.sendScale(sc);
       },
       onPeerLeave: (id: string) => {
         ctx.presence.delete(id);
@@ -95,8 +98,19 @@ export function createCollabSync(ctx: CollabSyncCtx) {
         if (c.page !== ctx.getCurrentPage() || c.id == null) return;
         const m = ctx.getMarkup(); m && m.setPeerCursor(c.id, c.x, c.y, c.user, c.color);
       },
+      onScale: (scale: any) => {
+        // Escala global recibida de otro colaborador → aplicarla localmente
+        ctx.getSession().scale = scale;
+        ctx.onScaleLoaded && ctx.onScaleLoaded(scale);
+      },
     });
     ctx.collab.connect(session.docId, ctx.getUser(), getUserColor(ctx.getUser()));
+  }
+
+  /** Difunde la escala calibrada a toda la sala (tiempo real) y la deja en sesión. */
+  function broadcastScale(scale: any) {
+    ctx.getSession().scale = scale;
+    ctx.collab.sendScale(scale);
   }
 
   /** Limpia el estado de colaboración al cambiar de plano. */
@@ -127,29 +141,31 @@ export function createCollabSync(ctx: CollabSyncCtx) {
   }
 
   /** POST (debounced) de la capa propia → el handler ORDS hace el MERGE. */
-  function saveLayerToServer() {
+  /** Persiste la capa propia en ORDS de forma inmediata (lo dispara el botón Guardar).
+      Incluye marcas, alturas de página, rotación y escala parametrizada.
+      @returns true si el servidor respondió OK. */
+  async function saveNow(): Promise<boolean> {
     const session = ctx.getSession();
-    if (session.docId == null) return;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      try {
-        const sesion = {
-          version: 3, docName: session.docName,
-          pages: ownPages(), pageHeights: session.pageHeights, scale: session.scale,
-        };
-        await fetch(API_MARKUP, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', id: String(session.docId) },
-          credentials: 'include',
-          body: JSON.stringify({
-            usuario     : ctx.getUser(),
-            usuario_id  : ctx.getUserId(),
-            id_revision : ctx.getRevId(),
-            sesion,
-          }),
-        });
-      } catch (e: any) { console.warn('[SAF] saveLayerToServer:', e.message); }
-    }, 1200);
+    if (session.docId == null) return false;   // archivo local: sin sala/servidor
+    try {
+      const sesion = {
+        version: 3, docName: session.docName,
+        pages: ownPages(), pageHeights: session.pageHeights, scale: session.scale,
+        rotation: session.rotation || 0,
+      };
+      const res = await fetch(API_MARKUP, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', id: String(session.docId) },
+        credentials: 'include',
+        body: JSON.stringify({
+          usuario     : ctx.getUser(),
+          usuario_id  : ctx.getUserId(),
+          id_revision : ctx.getRevId(),
+          sesion,
+        }),
+      });
+      return res.ok;
+    } catch (e: any) { console.warn('[SAF] saveNow:', e.message); return false; }
   }
 
   /** Carga las capas de todos los usuarios desde ORDS (propias editables, ajenas bloqueadas). */
@@ -164,9 +180,19 @@ export function createCollabSync(ctx: CollabSyncCtx) {
       if (!res.ok) return;   // 404 = plano sin markups aún
       const data = await res.json();
       const user = ctx.getUser(), userId = ctx.getUserId();
+      let savedRotation: number | null = null;
+      let savedScale: any = null;
+      let savedScaleTs = -1;
       (data?.capas || []).forEach((capa: any) => {
         const pages = capa?.sesion?.pages || {};
         const mine = (userId != null && String(capa.usuario_id) === String(userId)) || (capa.usuario === user);
+        if (mine && typeof capa?.sesion?.rotation === 'number') savedRotation = capa.sesion.rotation;
+        // La escala es GLOBAL: gana la calibración MÁS RECIENTE (mayor ts) entre todas las capas
+        const sc = capa?.sesion?.scale;
+        if (sc) {
+          const ts = Number(sc.ts) || 0;
+          if (ts >= savedScaleTs) { savedScaleTs = ts; savedScale = sc; }
+        }
         for (const p in pages) {
           if (mine) session.pages[p] = pages[p];
           else (remoteLayers[p] = remoteLayers[p] || {})[capa.usuario] = pages[p];
@@ -175,8 +201,18 @@ export function createCollabSync(ctx: CollabSyncCtx) {
       const markup = ctx.getMarkup(), page = ctx.getCurrentPage();
       markup && markup.setMarkupJSON(session.pages[page] || null);
       applyRemoteLayersForPage(page);
+      // Restaurar la escala calibrada guardada (pixeles / distancia_real / unidad)
+      if (savedScale) {
+        session.scale = savedScale;
+        ctx.onScaleLoaded && ctx.onScaleLoaded(savedScale);
+      }
+      // Restaurar la orientación guardada (re-renderiza el fondo con esa rotación)
+      if (savedRotation != null) {
+        session.rotation = savedRotation;
+        ctx.onRotationLoaded && ctx.onRotationLoaded(savedRotation);
+      }
     } catch (e: any) { console.warn('[SAF] loadRemoteLayersFromServer:', e.message); }
   }
 
-  return { pushLocalLayer, applyRemoteLayersForPage, start, reset, loadFromServer };
+  return { pushLocalLayer, saveNow, broadcastScale, applyRemoteLayersForPage, start, reset, loadFromServer };
 }
