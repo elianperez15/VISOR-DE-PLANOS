@@ -3,11 +3,14 @@ dist/
 *.log
 .DS_Store
 
-# Variables de entorno locales (versionar solo .env.example)
+# Variables de entorno.
+# .env.development y .env.production SÍ se versionan: no tienen secretos,
+# solo URLs públicas que acaban dentro del bundle del navegador. Son la
+# definición de cada entorno y deben viajar con el repo.
+# Lo que NO se versiona son las sobrescrituras locales de cada máquina:
 .env
 .env.local
 .env.*.local
-.env.production
 
 # Configuración local de Claude Code (no compartir)
 .claude/settings.local.json

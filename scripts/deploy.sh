@@ -1,67 +1,135 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — Despliega el visor de planos al servidor desde la Mac.
+# deploy.sh — Despliega el visor de planos a un entorno concreto.
 #
-#   1. Compila el frontend (npm run build → dist/)
-#   2. Copia dist/ a la carpeta física del visor (nginx la sirve en /)   (protege server/ del borrado)
-#   3. Copia el microservicio de colaboración (collab-server.js)
-#   4. Reinicia el servicio de colaboración (systemd) y verifica el health
+#   Uso:   bash scripts/deploy.sh dev     # rama develop → planos-dev.aicsacorp.com
+#          bash scripts/deploy.sh prod    # rama main    → planos.aicsacorp.com
 #
-# Pide la contraseña SSH UNA sola vez (multiplexa la conexión). El reinicio usa
-# sudo remoto con TTY, así que te pedirá la clave de sudo una vez.
+# Pasos:
+#   1. Valida entorno, rama de git y árbol limpio
+#   2. Compila el frontend con el MODO del entorno (npm run build:dev|build:prod)
+#   3. Copia dist/ al web root del entorno (nginx lo sirve en /)
+#   4. Copia el microservicio de colaboración y reinicia su servicio systemd
+#   5. Verifica el health del microservicio
 #
-# Uso:   bash scripts/deploy.sh
+# Ambos entornos viven en el MISMO servidor, separados por carpeta + vhost +
+# servicio systemd + puerto. Ver docs/ENTORNOS.md.
 #
 set -euo pipefail
 
-# ── CONFIGURA ESTO (una sola vez) ───────────────────────────────────────
-SERVER="adminsafvsp@192.168.50.163"                   # usuario SSH @ servidor
-WEB_ROOT="/usr/share/nginx/html/planos"               # carpeta física del visor; nginx la sirve en / (root → esta carpeta)
-COLLAB_DIR="/var/www/saf/planos/server/realtime"      # WorkingDirectory del systemd (fuera del web root)
-COLLAB_SERVICE="saf-collab"                            # nombre del servicio systemd
-BUILD_CMD="npm run build:dev"                          # dev → dev.aicsacorp.com | "npm run build" → prod (saf.aicsacorp.com)
+# ── MATRIZ DE ENTORNOS (lo único que se edita al mover infraestructura) ──
+SERVER="adminsafvsp@192.168.50.163"          # usuario SSH @ servidor (común a ambos)
+
+# --- DESARROLLO ---
+DEV_WEB_ROOT="/usr/share/nginx/html/planos-dev"
+DEV_COLLAB_DIR="/var/www/saf/planos-dev/server/realtime"
+DEV_SERVICE="saf-collab-dev"
+DEV_PORT=3101
+DEV_BUILD="npm run build:dev"
+DEV_BRANCH="develop"
+DEV_URL="https://planos-dev.aicsacorp.com"
+
+# --- PRODUCCIÓN ---
+PROD_WEB_ROOT="/usr/share/nginx/html/planos"
+PROD_COLLAB_DIR="/var/www/saf/planos/server/realtime"
+PROD_SERVICE="saf-collab"
+PROD_PORT=3100
+PROD_BUILD="npm run build:prod"
+PROD_BRANCH="main"
+PROD_URL="https://planos.aicsacorp.com"
 # ────────────────────────────────────────────────────────────────────────
+
+ENV="${1:-}"
+case "${ENV}" in
+  dev)
+    WEB_ROOT="${DEV_WEB_ROOT}";  COLLAB_DIR="${DEV_COLLAB_DIR}"
+    SERVICE="${DEV_SERVICE}";    PORT="${DEV_PORT}"
+    BUILD_CMD="${DEV_BUILD}";    WANT_BRANCH="${DEV_BRANCH}";  URL="${DEV_URL}"
+    ;;
+  prod)
+    WEB_ROOT="${PROD_WEB_ROOT}"; COLLAB_DIR="${PROD_COLLAB_DIR}"
+    SERVICE="${PROD_SERVICE}";   PORT="${PROD_PORT}"
+    BUILD_CMD="${PROD_BUILD}";   WANT_BRANCH="${PROD_BRANCH}"; URL="${PROD_URL}"
+    ;;
+  *)
+    echo "✗ Falta el entorno."
+    echo "  Uso:  bash scripts/deploy.sh dev"
+    echo "        bash scripts/deploy.sh prod"
+    exit 2
+    ;;
+esac
 
 cd "$(dirname "$0")/.."   # raíz del proyecto
 
+# ── 0/5  Validaciones previas ───────────────────────────────────────────
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+COMMIT=$(git rev-parse --short HEAD)
+
+echo "────────────────────────────────────────────────"
+echo "  Entorno   : ${ENV}  (${URL})"
+echo "  Rama      : ${BRANCH}  (esperada: ${WANT_BRANCH})"
+echo "  Commit    : ${COMMIT}"
+echo "  Web root  : ${WEB_ROOT}"
+echo "  Servicio  : ${SERVICE}  (puerto ${PORT})"
+echo "────────────────────────────────────────────────"
+
+if [ "${BRANCH}" != "${WANT_BRANCH}" ]; then
+  echo "⚠️  Estás en '${BRANCH}' pero ${ENV} se despliega desde '${WANT_BRANCH}'."
+  read -r -p "   ¿Continuar de todos modos? (s/N) " ok
+  [ "${ok}" = "s" ] || [ "${ok}" = "S" ] || { echo "Abortado."; exit 1; }
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo "⚠️  Hay cambios sin commitear. Lo desplegado NO coincidirá con ${COMMIT}."
+  read -r -p "   ¿Continuar de todos modos? (s/N) " ok
+  [ "${ok}" = "s" ] || [ "${ok}" = "S" ] || { echo "Abortado."; exit 1; }
+fi
+
+if [ "${ENV}" = "prod" ]; then
+  echo "🔴 Vas a desplegar a PRODUCCIÓN (${URL})."
+  read -r -p "   Escribe PRODUCCION para confirmar: " confirm
+  [ "${confirm}" = "PRODUCCION" ] || { echo "Abortado."; exit 1; }
+fi
+
 # ── Multiplexación SSH: una sola autenticación para todo el script ───────
-SSH_CP="${HOME}/.ssh/cm-saf-deploy.sock"
+SSH_CP="${HOME}/.ssh/cm-saf-deploy-${ENV}.sock"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=${SSH_CP}" -o ControlPersist=180)
 cleanup() { ssh "${SSH_OPTS[@]}" -O exit "${SERVER}" 2>/dev/null || true; }
 trap cleanup EXIT
 
-echo "▶ 1/4  Compilando frontend… (${BUILD_CMD})"
+echo "▶ 1/5  Compilando frontend… (${BUILD_CMD})"
+rm -rf dist                      # evita arrastrar assets del entorno anterior
 ${BUILD_CMD}
 [ -f dist/index.html ] || { echo "✗ El build no generó dist/. Abortando."; exit 1; }
 
-echo "▶ Conectando a ${SERVER} (contraseña SSH una sola vez)…"
+echo "▶ 2/5  Conectando a ${SERVER} (contraseña SSH una sola vez)…"
 ssh "${SSH_OPTS[@]}" "${SERVER}" true        # abre la conexión maestra
 
-echo "▶ 2/4  Copiando dist/ → ${WEB_ROOT}"
+echo "▶ 3/5  Copiando dist/ → ${WEB_ROOT}"
 # --exclude '/server/' como salvaguarda por si hubiera un server/ bajo el web root.
 rsync -avz --delete --exclude '/server/' -e "ssh ${SSH_OPTS[*]}" \
   dist/ "${SERVER}:${WEB_ROOT}/"
 
-echo "▶ 3/4  Copiando collab-server.js → ${COLLAB_DIR}"
+echo "▶ 4/5  Copiando collab-server.js → ${COLLAB_DIR}"
 ssh "${SSH_OPTS[@]}" "${SERVER}" "mkdir -p '${COLLAB_DIR}'"
 rsync -avz -e "ssh ${SSH_OPTS[*]}" \
   server/realtime/collab-server.js "${SERVER}:${COLLAB_DIR}/"
 
-echo "▶ 4/4  Reiniciando ${COLLAB_SERVICE} (pide clave de sudo)…"
-ssh -t "${SSH_OPTS[@]}" "${SERVER}" "sudo systemctl restart '${COLLAB_SERVICE}'"
+echo "▶ 5/5  Reiniciando ${SERVICE} (pide clave de sudo)…"
+ssh -t "${SSH_OPTS[@]}" "${SERVER}" "sudo systemctl restart '${SERVICE}'"
 
 echo "▶ Verificando…"
 sleep 1
-ACTIVE=$(ssh "${SSH_OPTS[@]}" "${SERVER}" "systemctl is-active '${COLLAB_SERVICE}'" || true)
-HEALTH=$(ssh "${SSH_OPTS[@]}" "${SERVER}" "curl -m 5 -s http://127.0.0.1:3100/health" || true)
+ACTIVE=$(ssh "${SSH_OPTS[@]}" "${SERVER}" "systemctl is-active '${SERVICE}'" || true)
+HEALTH=$(ssh "${SSH_OPTS[@]}" "${SERVER}" "curl -m 5 -s http://127.0.0.1:${PORT}/health" || true)
 
 echo "   servicio : ${ACTIVE}"
 echo "   health   : ${HEALTH:-<sin respuesta>}"
 
 if [ "${ACTIVE}" = "active" ] && echo "${HEALTH}" | grep -q '"ok":true'; then
-  echo "✅ Despliegue completo y microservicio sano."
+  echo "✅ ${ENV} desplegado (${COMMIT}) y microservicio sano → ${URL}"
 else
   echo "⚠️  Desplegado, pero el microservicio no responde. Revisa:"
-  echo "    ssh ${SERVER} 'journalctl -u ${COLLAB_SERVICE} -n 30 --no-pager'"
+  echo "    ssh ${SERVER} 'journalctl -u ${SERVICE} -n 30 --no-pager'"
   exit 1
 fi

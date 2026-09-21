@@ -1,0 +1,37 @@
+# Servicio systemd para el WebSocket de colaboración — entorno DESARROLLO.
+# Corre EN PARALELO a saf-collab (producción), en otro puerto y otra carpeta.
+#
+# Instalar:
+#   sudo cp server/realtime/saf-collab-dev.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now saf-collab-dev
+# Ver estado / logs:
+#   systemctl status saf-collab-dev
+#   journalctl -u saf-collab-dev -f
+[Unit]
+Description=SAF Planos (DEV) — WebSocket de colaboración en tiempo real
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Debe coincidir con DEV_COLLAB_DIR de scripts/deploy.sh
+WorkingDirectory=/var/www/saf/planos-dev/server/realtime
+ExecStart=/usr/bin/node collab-server.js
+Restart=always
+RestartSec=3
+
+# ── Variables de entorno del entorno DEV ────────────────────────────────
+# Puerto 3101 para no chocar con producción (3100).
+Environment=COLLAB_PORT=3101
+Environment=COLLAB_ORIGINS=https://planos-dev.aicsacorp.com
+
+# Endurecimiento básico
+User=planos
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
