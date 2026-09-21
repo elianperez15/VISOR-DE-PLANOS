@@ -14,6 +14,11 @@ import { ScaleManager } from './scale-manager';
 const MIN_ZOOM = 0.04;
 const MAX_ZOOM = 20;
 
+// Separación entre festones de las nubes de revisión, en px lógicos. La MISMA
+// para los dos modos (dos puntos y múltiples puntos), para que el trazo se vea
+// idéntico sin importar cómo se dibujó la nube ni de qué tamaño sea.
+const SCALLOP_SPACING = 18;
+
 // El backend WebGL de filtros tiene un límite de textura (~2048 px): en imágenes
 // grandes el filtro (p.ej. el tinte rojo del overlay) solo se aplica a la esquina
 // superior izquierda. El backend 2D procesa la imagen completa sin ese límite.
@@ -37,6 +42,7 @@ export class MarkupLayer {
     this.strokeColor = '#ef4444';
     this.fillColor   = 'rgba(239,68,68,0.10)';
     this.strokeWidth = 2;
+    this.fontSize    = 16;   // tamaño de texto para Texto / Nota / Globo
 
     // ── Estado de dibujo ───────────────────────────────────────────────
     this.currentTool   = 'select';
@@ -83,8 +89,10 @@ export class MarkupLayer {
     this.onAnnotClick  = null;  // (fabricObj|null) => void — al seleccionar/deseleccionar
     this.onFollowLink  = null;  // (targetPage:number) => void — doble clic en hipervínculo
     this.onShowImage   = null;  // (dataUrl:string) => void — clic en miniatura de adjunto
+    this.onThumbResized = null; // (figure, width) => void — se redimensionó la miniatura en el plano
     this.onStampDblClick = null;// (data, obj) => void — doble clic en un sello (p.ej. RFI)
     this.onCloudCreated  = null;// (obj) => void — se colocó una nube de revisión
+    this.onLinkCreated   = null;// (obj) => void — se colocó un hipervínculo
     this.onLocalChange = null;  // () => void — el usuario local cambió SU capa (debounced)
 
     // ── Colaboración en tiempo real ────────────────────────────────────
@@ -282,17 +290,20 @@ export class MarkupLayer {
      del fondo pero por debajo del markup. No se serializa (isBackground).
      ════════════════════════════════════════════════════════════════════ */
   setCompareOverlay(dataUrl, imgW, imgH, opts = {}) {
-    const { opacity = 0.5, tint = null } = opts;
+    const { opacity = 0.5, tint = null, interactive = false, offsetX = 0, offsetY = 0, onMove = null } = opts;
     return new Promise(resolve => {
       this.clearCompareOverlay();
       if (!dataUrl || !this._pdfW) { resolve(); return; }
       fabric.Image.fromURL(dataUrl, img => {
         img.set({
-          left: 0, top: 0,
+          left: offsetX, top: offsetY,
           scaleX: this._pdfW / imgW,
           scaleY: this._pdfH / imgH,
-          selectable: false, evented: false,
-          hasControls: false, hasBorders: false,
+          // En modo "ajustar" el overlay es arrastrable (para alinear las revisiones)
+          selectable: interactive, evented: interactive,
+          hasControls: false, hasBorders: interactive,
+          lockScalingX: true, lockScalingY: true, lockRotation: true,
+          hoverCursor: interactive ? 'move' : 'default',
           opacity,
         });
         img.isBackground = true;   // no se guarda como markup
@@ -302,9 +313,20 @@ export class MarkupLayer {
           img.filters = [ new fabric.Image.filters.BlendColor({ color: tint, mode: 'tint', alpha: 0.55 }) ];
           img.applyFilters();
         }
-        // Insertar justo encima de los fondos (bg + detalle), bajo el markup
-        const bgCount = this.canvas.getObjects().filter(o => o.isBackground).length;
-        this.canvas.insertAt(img, bgCount, false);
+        if (interactive) {
+          // Encima de todo para poder arrastrarlo en cualquier zona
+          this.canvas.add(img);
+          this.canvas.setActiveObject(img);
+          if (onMove) {
+            const report = () => onMove(img.left, img.top);
+            img.on('moving', report);
+            img.on('modified', report);
+          }
+        } else {
+          // Encima de los fondos (bg + detalle), bajo el markup
+          const bgCount = this.canvas.getObjects().filter(o => o.isBackground).length;
+          this.canvas.insertAt(img, bgCount, false);
+        }
         this._cmpImg = img;
         this.canvas.renderAll();
         resolve();
@@ -321,6 +343,144 @@ export class MarkupLayer {
   }
 
   hasCompareOverlay() { return !!this._cmpImg; }
+
+  /** Desplaza el overlay de comparación (modo ajustar) por dx/dy en unidades del
+      plano — usado por las flechas del teclado. Devuelve la nueva posición. */
+  nudgeCompareOverlay(dx, dy) {
+    if (!this._cmpImg) return null;
+    this._cmpImg.left += dx;
+    this._cmpImg.top  += dy;
+    this._cmpImg.setCoords();
+    this.canvas.renderAll();
+    return { left: this._cmpImg.left, top: this._cmpImg.top };
+  }
+
+  /* ── Recorte de región → PNG (para "Seleccionar área") ─────────────────
+     Fase 'draw'   : dos formas de definir el área, a elección del usuario —
+                     · arrastrar de una esquina a la otra, o
+                     · hacer clic en un punto y clic en el opuesto (dos puntos),
+                       con el rectángulo siguiendo el cursor entre ambos clics.
+     Fase 'adjust' : el rectángulo queda movible/redimensionable hasta que se
+                     confirma; sólo entonces se genera la imagen. */
+  beginRegionSnapshot(opts) {
+    opts = opts || {};
+    this._snapshotMode = 'draw';
+    this._snapOnReady  = opts.onReady || null;   // se llama al terminar de dibujar
+    this._snapOnDone   = opts.onDone  || null;   // se llama al confirmar/cancelar (dataUrl|null)
+    this._snapRect  = null;
+    this._snapStart = null;
+    this._snapTwoClick = false;                 // esperando el 2.º punto (modo clic-clic)
+    this.canvas.selection = false;
+    this.canvas.discardActiveObject();
+    this.canvas.skipTargetFind = true;   // los clics definen el área, no seleccionan marcas
+    this.canvas.defaultCursor = 'crosshair';
+    this.canvas.setCursor('crosshair');
+    this.canvas.renderAll();
+  }
+
+  cancelRegionSnapshot() { if (this._snapshotMode) this._finishRegionSnapshot(null); }
+
+  /** Genera la imagen de la región ajustada y termina. */
+  confirmRegionSnapshot() {
+    if (this._snapshotMode !== 'adjust' || !this._snapRect) { this._finishRegionSnapshot(null); return; }
+    const r = this._snapRect;
+    // Ocultar la selección/manijas y el trazo para que no salgan en la imagen
+    this.canvas.discardActiveObject();
+    r.set({ strokeWidth: 0, fill: 'transparent' });
+    this.canvas.renderAll();
+    let { left, top, width, height } = r.getBoundingRect();   // coords de pantalla
+    const cw = this.canvas.getWidth(), ch = this.canvas.getHeight();
+    left = Math.max(0, left); top = Math.max(0, top);
+    width  = Math.min(width,  cw - left);
+    height = Math.min(height, ch - top);
+    let url = null;
+    if (width > 1 && height > 1)
+      url = this.canvas.toDataURL({ format: 'png', multiplier: 2, left, top, width, height });
+    this._finishRegionSnapshot(url);
+  }
+
+  _finishRegionSnapshot(dataUrl) {
+    this._snapshotMode = null;
+    if (this._snapRect) { this.canvas.remove(this._snapRect); this._snapRect = null; }
+    this._snapStart = null;
+    this._snapTwoClick = false;
+    this.canvas.skipTargetFind = false;
+    this.canvas.discardActiveObject();
+    this.canvas.selection     = (this.currentTool === 'select');
+    this.canvas.defaultCursor = this.currentTool === 'pan' ? 'grab' : 'default';
+    this.canvas.setCursor(this.canvas.defaultCursor);
+    this.canvas.renderAll();
+    const cb = this._snapOnDone; this._snapOnDone = null; this._snapOnReady = null;
+    if (cb) cb(dataUrl || null);
+  }
+
+  _snapDown(opt) {
+    const ptr = this.canvas.getPointer(opt.e);
+    // 2.º punto del modo clic-clic → cerrar el área con el rectángulo ya dibujado
+    if (this._snapTwoClick) {
+      this._snapMove(opt);   // asegura que el rect llegue exactamente al punto clicado
+      if (this._snapRect && this._snapRect.width >= 8 && this._snapRect.height >= 8) {
+        this._snapTwoClick = false;
+        this._snapEnterAdjust();
+      }
+      return;
+    }
+    this._snapStart = ptr;
+    this._snapRect = new fabric.Rect({
+      left: ptr.x, top: ptr.y, width: 0, height: 0,
+      fill: 'rgba(37,99,235,0.12)', stroke: '#2563eb', strokeWidth: 1.5,
+      strokeDashArray: [6, 4], selectable: false, evented: false,
+    });
+    this._snapRect.isBackground = true;   // no cuenta como marca ni se serializa
+    this.canvas.add(this._snapRect);
+  }
+  _snapMove(opt) {
+    if (!this._snapStart || !this._snapRect) return;
+    const ptr = this.canvas.getPointer(opt.e);
+    this._snapRect.set({
+      left  : Math.min(this._snapStart.x, ptr.x),
+      top   : Math.min(this._snapStart.y, ptr.y),
+      width : Math.abs(ptr.x - this._snapStart.x),
+      height: Math.abs(ptr.y - this._snapStart.y),
+    });
+    this.canvas.renderAll();
+  }
+  _snapUp() {
+    // Soltar sin apenas mover = fue un CLIC, no un arrastre: se queda el primer
+    // punto fijado y el rectángulo sigue al cursor hasta el clic del 2.º punto.
+    if (!this._snapRect || this._snapRect.width < 8 || this._snapRect.height < 8) {
+      if (this._snapRect && this._snapStart) {
+        this._snapTwoClick = true;
+        this.canvas.renderAll();
+      }
+      return;
+    }
+    this._snapEnterAdjust();
+  }
+
+  /** Fija el área dibujada y pasa a la fase "ajustar" (movible/redimensionable). */
+  _snapEnterAdjust() {
+    if (!this._snapRect) return;
+    this._snapshotMode = 'adjust';
+    this._snapStart = null;
+    this._snapTwoClick = false;
+    this.canvas.skipTargetFind = false;   // ahora Fabric sí debe "ver" el rect para ajustarlo
+    const r = this._snapRect;
+    r.set({
+      selectable: true, evented: true, hasControls: true, hasBorders: true,
+      lockRotation: true, strokeUniform: true,
+      cornerColor: '#2563eb', cornerStrokeColor: '#ffffff', cornerStyle: 'circle',
+      transparentCorners: false, borderColor: '#2563eb', cornerSize: 12,
+      hoverCursor: 'move',
+    });
+    r.setControlsVisibility && r.setControlsVisibility({ mtr: false });   // sin rotación
+    this.canvas.selection = false;
+    this.canvas.setActiveObject(r);
+    this.canvas.defaultCursor = 'default';
+    this.canvas.setCursor('default');
+    this.canvas.renderAll();
+    if (this._snapOnReady) this._snapOnReady();
+  }
 
   /* ════════════════════════════════════════════════════════════════════
      HERRAMIENTAS
@@ -363,6 +523,11 @@ export class MarkupLayer {
     this.strokeWidth = parseInt(width,10) || 2;
     if (this.canvas.isDrawingMode && this.canvas.freeDrawingBrush)
       this.canvas.freeDrawingBrush.width = this.strokeWidth;
+  }
+  /** Tamaño de texto por defecto para las nuevas anotaciones (Texto/Nota/Globo).
+      Igual que los demás controles de estilo: define el valor de las próximas figuras. */
+  setFontSize(px) {
+    this.fontSize = parseInt(px, 10) || 16;
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -441,12 +606,12 @@ export class MarkupLayer {
     this.canvas.on('selection:created', opt => {
       if (this.currentTool !== 'select') return;
       const obj = opt.selected?.[0];
-      if (obj && !obj.isBackground) this.onAnnotClick && this.onAnnotClick(obj);
+      if (obj && !obj.isBackground && !obj.isThumb) this.onAnnotClick && this.onAnnotClick(obj);
     });
     this.canvas.on('selection:updated', opt => {
       if (this.currentTool !== 'select') return;
       const obj = opt.selected?.[0];
-      if (obj && !obj.isBackground) this.onAnnotClick && this.onAnnotClick(obj);
+      if (obj && !obj.isBackground && !obj.isThumb) this.onAnnotClick && this.onAnnotClick(obj);
     });
     this.canvas.on('selection:cleared', () => {
       // No forzamos cierre — el panel permanece abierto para que el
@@ -463,12 +628,14 @@ export class MarkupLayer {
         if (obj.data?.type === 'link')           this.onFollowLink && this.onFollowLink(obj.data);
         else if (obj.data?.type === 'photo-pin') { const attachment = this._firstImageAttachment(obj); if (attachment) this.onShowImage && this.onShowImage(attachment.dataUrl); }
         else if (obj.data?.type === 'stamp')     this.onStampDblClick && this.onStampDblClick(obj.data, obj);
+        else if (obj.data?.type === 'cloud' && obj.data?.isRfi) this.onStampDblClick && this.onStampDblClick(obj.data, obj);
         return;
       }
       if (obj.data?.type === 'link')             this.onFollowLink && this.onFollowLink(obj.data);
+      else if (obj.data?.type === 'att-thumb')   this.onShowImage && this.onShowImage(obj.data.src);   // miniatura → ampliar
       else if (obj.data?.type === 'photo-pin')   { const attachment = this._firstImageAttachment(obj); if (attachment) this.onShowImage && this.onShowImage(attachment.dataUrl); }
       else if (obj.data?.type === 'stamp')       this.onStampDblClick && this.onStampDblClick(obj.data, obj);
-      else if (obj.data?.type === 'cloud' && obj.data?.isRfi) { /* nube RFI: texto fijo, no editable */ }
+      else if (obj.data?.type === 'cloud' && obj.data?.isRfi) this.onStampDblClick && this.onStampDblClick(obj.data, obj);  // nube RFI → abrir RFI
       else if (obj.data?.type === 'cloud')       this._editCloudLabel(obj);
       else if (this._isLabelable(obj))           this._editLabel(obj);
     });
@@ -517,16 +684,27 @@ export class MarkupLayer {
     this._scheduleDetail();
   }
 
+  /** Coordenadas de pantalla (clientX/clientY) de un evento de ratón O táctil.
+      En tablets el evento es TouchEvent y clientX/clientY viven en touches[]. */
+  _clientXY(e) {
+    if (e && e.touches && e.touches[0])               return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e && e.changedTouches && e.changedTouches[0]) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e ? e.clientX : 0, y: e ? e.clientY : 0 };
+  }
+
   /* ── Mouse down ───────────────────────────────────────────────────── */
   _onDown(opt) {
     // Clic derecho: reservado para el doble-clic-derecho de zoom out (no dibuja)
     if (opt.e && opt.e.button === 2) return;
+    if (this._snapshotMode === 'draw')  { this._snapDown(opt); return; }   // recorte: dibujar
+    if (this._snapshotMode === 'adjust') return;                           // recorte: Fabric ajusta el rect
     const ptr  = this.canvas.getPointer(opt.e);
     const tool = this.currentTool;
 
-    // Clic en una miniatura de adjunto → ver la imagen en grande
-    if (opt.target?.data?.type === 'att-thumb') {
-      this.onShowImage && this.onShowImage(opt.target.data.src);
+    // La miniatura del adjunto: clic la selecciona para REDIMENSIONAR (esquina ↘);
+    // doble clic la amplía. No dibujar/borrar encima de ella.
+    if (opt.target?.isThumb) {
+      if (tool !== 'select') { this.canvas.setActiveObject(opt.target); this.canvas.renderAll(); }
       return;
     }
 
@@ -535,6 +713,10 @@ export class MarkupLayer {
       const target = opt.target;
       if (target && target.data?.remoto) {
         this._hint && this._hint('Esta figura es de otro usuario — no puedes borrarla');
+        return;
+      }
+      if (this._isLockedRfiCloud(target)) {
+        this._hint && this._hint('Nube RFI vinculada — no se puede eliminar');
         return;
       }
       if (target && !target.isBackground) {
@@ -551,7 +733,7 @@ export class MarkupLayer {
     // Pan: botón medio · herramienta pan · barra espaciadora mantenida
     if (opt.e.button === 1 || tool === 'pan' || this._spaceDown) {
       this._isPanning = true;
-      this._panStart  = { x: opt.e.clientX, y: opt.e.clientY };
+      this._panStart  = this._clientXY(opt.e);   // funciona con ratón y con táctil (tablet)
       this.canvas.setCursor('grabbing');
       opt.e.preventDefault();
       return;
@@ -569,6 +751,7 @@ export class MarkupLayer {
     switch (tool) {
       // ── Herramientas de arrastre ────────────────────────────────────
       case 'arrow':
+      case 'line':
       case 'measure':
       case 'rect':
       case 'ellipse':
@@ -586,11 +769,16 @@ export class MarkupLayer {
         }
         break;
 
-      // ── Herramientas de multi-clic (cierre con Enter/Esc) ───────────
+      // ── Herramientas de multi-clic (cierre con Enter/Esc/doble clic) ─
       case 'area':
       case 'perimeter':
+      case 'cloud-poly':   // nube de puntos: clic en cada vértice, doble clic cierra
         if (isDbl) { this._finalizeMultiPoint(); }
-        else       { this._drawingPts.push({x:ptr.x,y:ptr.y}); this._isDrawing=true; this._updateTempPoly(ptr); }
+        else {
+          this._drawingPts.push({x:ptr.x,y:ptr.y}); this._isDrawing=true; this._updateTempPoly(ptr);
+          if (tool === 'cloud-poly')
+            this._hint('[[icon:cloud]] Clic en cada punto de la nube · doble clic o Enter para cerrar');
+        }
         break;
 
       // ── Ángulo: exactamente 3 clics ─────────────────────────────────
@@ -599,8 +787,8 @@ export class MarkupLayer {
         this._isDrawing = true;
         this._updateTempPoly(ptr);
         this._hint(this._drawingPts.length===1
-          ? '∠ Clic en el extremo del primer brazo'
-          : '∠ Clic en el extremo del segundo brazo');
+          ? '[[icon:triangle]] Clic en el extremo del primer brazo'
+          : '[[icon:triangle]] Clic en el extremo del segundo brazo');
         if (this._drawingPts.length >= 3) this._finalizeMultiPoint();
         break;
 
@@ -625,16 +813,22 @@ export class MarkupLayer {
 
   /* ── Mouse move ───────────────────────────────────────────────────── */
   _onMove(opt) {
+    if (this._snapshotMode === 'draw')  { this._snapMove(opt); return; }   // recorte: dibujar
+    if (this._snapshotMode === 'adjust') return;                           // recorte: Fabric ajusta
     const ptr = this.canvas.getPointer(opt.e);
 
     if (this._isPanning && this._panStart) {
-      this.canvas.relativePan({ x: opt.e.clientX-this._panStart.x, y: opt.e.clientY-this._panStart.y });
-      this._panStart = { x: opt.e.clientX, y: opt.e.clientY };
+      const c = this._clientXY(opt.e);   // ratón o táctil
+      // Ignorar lecturas inválidas (evita que un NaN corrompa el transform y "borre" el plano)
+      if (Number.isFinite(c.x) && Number.isFinite(c.y)) {
+        this.canvas.relativePan({ x: c.x - this._panStart.x, y: c.y - this._panStart.y });
+        this._panStart = c;
+      }
       return;
     }
 
     const tool = this.currentTool;
-    const dragTools = ['arrow','measure','rect','ellipse','highlight','link','cloud'];
+    const dragTools = ['arrow','line','measure','rect','ellipse','highlight','link','cloud'];
 
     // Modo dos-puntos: tras el primer clic, la preview sigue al cursor sin botón
     if (this._twoClick && this._mouseStart && dragTools.includes(tool)) {
@@ -646,13 +840,15 @@ export class MarkupLayer {
 
     if (dragTools.includes(tool)) {
       this._updateTempPreview(this._mouseStart, ptr);
-    } else if (['area','perimeter','angle'].includes(tool)) {
+    } else if (['area','perimeter','angle','cloud-poly'].includes(tool)) {
       this._updateTempPoly(ptr);
     }
   }
 
   /* ── Mouse up ─────────────────────────────────────────────────────── */
   _onUp(opt) {
+    if (this._snapshotMode === 'draw')  { this._snapUp(opt); return; }   // recorte: fin del dibujo
+    if (this._snapshotMode === 'adjust') return;                         // recorte: Fabric ajusta
     if (this._isPanning) {
       this._isPanning = false; this._panStart = null;
       this.canvas.setCursor(this.currentTool==='pan'?'grab':'crosshair');
@@ -661,7 +857,7 @@ export class MarkupLayer {
     }
 
     const tool = this.currentTool;
-    if (!this._isDrawing || ['select','freehand','area','perimeter','angle','text','note','callout','stamp','eraser'].includes(tool)) return;
+    if (!this._isDrawing || ['select','freehand','area','perimeter','angle','cloud-poly','text','note','callout','stamp','eraser'].includes(tool)) return;
 
     const ptr   = this.canvas.getPointer(opt.e);
     const start = this._mouseStart;
@@ -690,6 +886,7 @@ export class MarkupLayer {
     if (tool === 'cloud') { this._addCloudFromRect(start.x, start.y, end.x, end.y); return; }
     switch (tool) {
       case 'arrow':     this._addArrow    (start.x,start.y,end.x,end.y); break;
+      case 'line':      this._addLine     (start.x,start.y,end.x,end.y); break;
       case 'measure':   this._addDimension(start.x,start.y,end.x,end.y); break;
       case 'rect':      this._addRect     (start.x,start.y,end.x,end.y); break;
       case 'ellipse':   this._addEllipse  (start.x,start.y,end.x,end.y); break;
@@ -719,7 +916,7 @@ export class MarkupLayer {
     const width = Math.abs(end.x-start.x), height = Math.abs(end.y-start.y);
     const MIN_CLOUD_PREVIEW_PX = 4;   // bajo este tamaño se previsualiza como rectángulo
     let shape;
-    if (tool === 'arrow' || tool === 'measure') {
+    if (tool === 'arrow' || tool === 'line' || tool === 'measure') {
       shape = new fabric.Line([start.x,start.y,end.x,end.y], base);
     } else if (tool === 'ellipse') {
       shape = new fabric.Ellipse(Object.assign({ left, top, rx:width/2, ry:height/2 }, base));
@@ -743,14 +940,27 @@ export class MarkupLayer {
       const activeTag = document.activeElement.tagName;
       if (activeTag==='INPUT'||activeTag==='TEXTAREA') return;
 
+      if (domEvent.key==='Escape' && this._snapshotMode) { this.cancelRegionSnapshot(); return; }
       if (domEvent.key==='Enter' && this._isDrawing) { this._finalizeMultiPoint(); return; }
-      if (domEvent.key==='Escape')                   { this._cancelDrawing();       return; }
+      if (domEvent.key==='Escape') {
+        this._cancelDrawing();                 // descarta la figura en progreso (arrastre/2 clics/multipunto)
+        this.canvas.discardActiveObject();     // deselecciona lo que hubiera seleccionado
+        // Aborta por completo la colocación: vuelve a "Seleccionar" (también en herramientas de 1 clic)
+        if (this.currentTool !== 'select') {
+          if (this.onAutoSelect) this.onAutoSelect();
+          else this.setTool('select');
+        }
+        this.canvas.renderAll();
+        return;
+      }
 
       if ((domEvent.key==='Delete'||domEvent.key==='Backspace')) {
         const obj = this.canvas.getActiveObject();
         if (obj && !obj.isBackground) {
+          if (obj.isThumb) return;   // la miniatura del adjunto se gestiona desde el pin
           if (obj.isEditing) return; // texto en edición
           if (obj.data?.remoto) return; // figura de otro usuario → no borrable
+          if (this._isLockedRfiCloud(obj)) { this._hint && this._hint('Nube RFI vinculada — no se puede eliminar'); return; }
           // Eliminar también su etiqueta de texto enlazada
           if (obj.data?.type === 'cloud' && obj.data?.cloudId) this._removeCloudLabel(obj.data.cloudId);
           if (obj.data?.labelId) { this._removeLabel(obj.data.labelId); this._removeThumb(obj.data.labelId); }
@@ -832,9 +1042,10 @@ export class MarkupLayer {
     if (pts.length < 2) return;
 
     switch (tool) {
-      case 'area':      this._addArea     (pts); break;
-      case 'perimeter': this._addPerimeter(pts); break;
-      case 'angle':     if (pts.length>=3) this._addAngle(pts[0],pts[1],pts[2]); break;
+      case 'area':       this._addArea     (pts); break;
+      case 'perimeter':  this._addPerimeter(pts); break;
+      case 'cloud-poly': if (pts.length>=3) this._addCloud(pts); break;   // ≥3 vértices = nube
+      case 'angle':      if (pts.length>=3) this._addAngle(pts[0],pts[1],pts[2]); break;
     }
     if (this.onAutoSelect) this.onAutoSelect();   // una sola inserción → volver a seleccionar
   }
@@ -853,6 +1064,16 @@ export class MarkupLayer {
     ]);
     group.data = { type:'arrow' };
     this._place(group);
+  }
+
+  /* ── Línea (recta, sin punta) ───────────────────────────────────────── */
+  _addLine(x1,y1,x2,y2) {
+    const line = new fabric.Line([x1,y1,x2,y2], {
+      stroke: this.strokeColor, strokeWidth: this.strokeWidth,
+      strokeLineCap: 'round',
+    });
+    line.data = { type:'line' };
+    this._place(line);
   }
 
   /* ── Dimensión / Cota ───────────────────────────────────────────────── */
@@ -963,11 +1184,11 @@ export class MarkupLayer {
     // targetRepoId→ salto a OTRO plano (id_en_repositorio); APEX maneja la navegación
     obj.data = { type:'link', targetPage:null, targetRepoId:null, targetName:null, targetFile:null };
     this._place(obj);
+    this.onLinkCreated && this.onLinkCreated(obj);
   }
 
   /* ── Nube de revisión ───────────────────────────────────────────────── */
   _addCloud(pts) {
-    const SCALLOP_SPACING = 18;   // px lógicos entre festones
     const closed = [...pts, pts[0]];
     let pathData = `M ${pts[0].x} ${pts[0].y}`;
     for (let i=0;i<closed.length-1;i++) {
@@ -981,8 +1202,9 @@ export class MarkupLayer {
     }
     const obj = new fabric.Path(pathData+' Z',{
       stroke:this.strokeColor, strokeWidth:this.strokeWidth, fill:this.fillColor,
+      strokeLineJoin:'round', strokeLineCap:'round',
     });
-    obj.data = { type:'cloud', points: pts };
+    obj.data = { type:'cloud', points: pts, cloudId: `cld-${Date.now().toString(36)}` };
     this._place(obj);
     this.onCloudCreated && this.onCloudCreated(obj);
   }
@@ -1018,12 +1240,13 @@ export class MarkupLayer {
   /**
    * Nube de revisión estilo Procore/Bluebeam: festones (arcos) uniformes
    * recorriendo el perímetro del rectángulo, todos bombeados hacia afuera.
+   *
+   * El festón mide lo mismo que en la nube de múltiples puntos (_addCloud):
+   * SCALLOP_SPACING px por festón, con el radio ajustado para que encaje exacto
+   * en cada lado. Antes el radio era proporcional al tamaño (hasta 20 px), por
+   * lo que una nube grande arrastrada tenía un trazo más grueso que la de puntos.
    */
   _revisionCloudPath(left, top, width, height) {
-    const MIN_SCALLOP_RADIUS = 7;
-    const MAX_SCALLOP_RADIUS = 20;
-    // Radio del festón: proporcional al tamaño, acotado para que se vea parejo
-    const scallopRadius = Math.max(MIN_SCALLOP_RADIUS, Math.min(MAX_SCALLOP_RADIUS, Math.min(width, height) / 3));
     const corners = [
       [left,         top         ],   // sup-izq
       [left + width, top         ],   // sup-der
@@ -1035,8 +1258,8 @@ export class MarkupLayer {
       const [x1, y1] = corners[i];
       const [x2, y2] = corners[(i + 1) % 4];
       const len = Math.hypot(x2 - x1, y2 - y1);
-      const scallopCount = Math.max(1, Math.round(len / (2 * scallopRadius)));  // nº de festones en este lado
-      const radius       = (len / scallopCount) / 2;                            // radio que encaja exacto
+      const scallopCount = Math.max(2, Math.round(len / SCALLOP_SPACING));   // nº de festones en este lado
+      const radius       = (len / scallopCount) / 2;                          // radio que encaja exacto
       const unitX = (x2 - x1) / len, unitY = (y2 - y1) / len;
       for (let k = 1; k <= scallopCount; k++) {
         const px = x1 + unitX * (len * k / scallopCount);
@@ -1209,7 +1432,63 @@ export class MarkupLayer {
       if (o.data?.type === 'cloud-label' && o.data?.locked) {
         o.set({ editable:false, selectable:false, evented:false, hasControls:false, hoverCursor:'default' });
       }
+      // Nube RFI: tamaño/posición/rotación bloqueados (los flags no se serializan → se reaplican)
+      if (o.data?.type === 'cloud' && o.data?.isRfi) {
+        o.set({ lockScalingX:true, lockScalingY:true, lockMovementX:true, lockMovementY:true, lockRotation:true, hasControls:false });
+        o.setCoords();
+      }
     });
+  }
+
+  /** ¿Es una nube RFI ya vinculada? (color rojo + rfiId) → no se puede eliminar. */
+  _isLockedRfiCloud(obj) {
+    return !!(obj && obj.data && obj.data.type === 'cloud' && obj.data.isRfi && obj.data.rfiId != null && String(obj.data.rfiId).trim() !== '');
+  }
+
+  /** Coloca dentro de la nube RFI el SELLO de RFI (mismo estilo, SIN inclinación).
+      Es fijo (no editable/seleccionable) y se enlaza a la nube por cloudId. */
+  setRfiCloudStamp(cloudObj, text) {
+    const cloudId = cloudObj?.data?.cloudId;
+    if (!cloudId) return;
+    const color = cloudObj.stroke || this.strokeColor;
+    this._removeCloudLabel(cloudId);           // reemplaza cualquier etiqueta previa
+    const center = cloudObj.getCenterPoint();
+    const PAD = 10;
+    const textObj = new fabric.Text(text, {
+      fontSize: 16, fontFamily: 'Arial Black,sans-serif', fontWeight: 'bold',
+      fill: color, left: 0, top: 0, selectable: false, evented: false,
+    });
+    const box = new fabric.Rect({
+      left: -PAD, top: -PAD, width: textObj.width + PAD * 2, height: textObj.height + PAD * 2,
+      stroke: color, strokeWidth: 2.5, fill: `${color}18`, rx: 5, ry: 5, selectable: false, evented: false,
+    });
+    const group = new fabric.Group([box, textObj], {
+      left: center.x, top: center.y, originX: 'center', originY: 'center',
+      angle: 0,                                // SIN inclinación (a diferencia del sello normal)
+      selectable: false, evented: false, hasControls: false, hoverCursor: 'default',
+    });
+    group.data = { type: 'cloud-label', cloudId, locked: true, isRfiStamp: true, autor: this.currentUser };
+    // Anclar en la parte superior de la nube
+    const pos = this._rfiStampTop(cloudObj, group);
+    group.set({ left: pos.left, top: pos.top });
+    this._skipSnap = true;
+    this.canvas.add(group);
+    this._skipSnap = false;
+    group.setCoords();
+    this.canvas.renderAll();
+    this._snapshot();
+    this._notifyLocalChange();
+  }
+
+  /** Elimina una nube y su etiqueta/sello (uso: cancelar Nube RFI sin vincular). */
+  removeCloud(cloudObj) {
+    if (!cloudObj) return;
+    if (cloudObj.data?.cloudId) this._removeCloudLabel(cloudObj.data.cloudId);
+    this.canvas.remove(cloudObj);
+    this.canvas.discardActiveObject();
+    this.canvas.renderAll();
+    this._snapshot();
+    this._notifyLocalChange();
   }
 
   /* ════════════════════════════════════════════════════════════════════
@@ -1235,6 +1514,87 @@ export class MarkupLayer {
     return labelObj ? labelObj.text : '';
   }
 
+  /** Devuelve el objeto de texto (IText/Textbox) de una figura o grupo (o null). */
+  _figureTextObj(obj) {
+    if (!obj) return null;
+    const isT = o => o && (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox');
+    if (isT(obj)) return obj;
+    if (obj.getObjects) return obj.getObjects().find(isT) || null;
+    return null;
+  }
+
+  /** Ajusta el texto de una nota/globo a su recuadro: lo envuelve al ANCHO y, si
+      no cabe en ALTO, lo recorta con "…". El texto completo vive en data._fullText. */
+  _fitFigureText(figure) {
+    if (!figure || !figure._objects) return;
+    const t = figure.data?.type;
+    if (t !== 'note' && t !== 'callout') return;
+    const rect = figure._objects.find(o => o.type === 'rect');
+    const txt  = this._figureTextObj(figure);
+    if (!rect || !txt || typeof txt.initDimensions !== 'function') return;
+
+    const PAD  = txt._pad || Math.round((txt.fontSize || 16) * 0.6);
+    const maxW = Math.max(12, rect.width  - PAD * 2);
+    const maxH = Math.max(txt.fontSize || 16, rect.height - PAD * 2);
+    const full = (figure.data._fullText != null) ? figure.data._fullText : (txt.text || '');
+    figure.data._fullText = full;
+
+    if (txt.type === 'textbox') txt.set('width', maxW);   // envuelve al ancho del recuadro
+    txt.set('text', full);
+    txt.initDimensions();
+
+    // Si sobrepasa el alto, recortar con "…" (búsqueda binaria)
+    if (txt.height > maxH && full.length) {
+      let lo = 0, hi = full.length, best = '…';
+      while (lo <= hi) {
+        const mid  = (lo + hi) >> 1;
+        const cand = full.slice(0, mid).replace(/\s+$/, '') + '…';
+        txt.set('text', cand);
+        txt.initDimensions();
+        if (txt.height <= maxH) { best = cand; lo = mid + 1; } else hi = mid - 1;
+      }
+      txt.set('text', best);
+      txt.initDimensions();
+    }
+    txt.dirty = true;
+    figure.dirty = true;
+    this.canvas.renderAll();
+  }
+
+  /** Texto que se MUESTRA en la figura: para texto/nota/globo es su propio texto;
+      para el resto, la etiqueta separada (comportamiento clásico). */
+  getAnnotText(obj) {
+    const t = obj?.data?.type;
+    if (t === 'note' || t === 'callout')
+      return (obj.data._fullText != null) ? obj.data._fullText : ((this._figureTextObj(obj)?.text) || '');
+    if (t === 'text') { const tx = this._figureTextObj(obj); return tx ? (tx.text || '') : ''; }
+    return this.getLabelText(obj);
+  }
+
+  /** Edita el texto propio de la figura (texto/nota/globo); para el resto usa etiqueta. */
+  setAnnotText(obj, text) {
+    const t = obj?.data?.type;
+    if (t === 'note' || t === 'callout') {
+      if (!obj.data) obj.data = {};
+      obj.data._fullText = text || '';
+      this._fitFigureText(obj);        // envuelve + recorta al recuadro
+      this._snapshot();
+      this._notifyLocalChange && this._notifyLocalChange();
+      return;
+    }
+    if (t === 'text') {
+      const tx = this._figureTextObj(obj);
+      if (!tx) return;
+      tx.set('text', text || '');
+      tx.dirty = true; obj.dirty = true; obj.setCoords && obj.setCoords();
+      this.canvas.renderAll();
+      this._snapshot();
+      this._notifyLocalChange && this._notifyLocalChange();
+      return;
+    }
+    this.setLabelText(obj, text);
+  }
+
   /** Crea/actualiza/elimina la etiqueta de texto de una figura (desde el panel) */
   setLabelText(obj, text) {
     if (!obj) return;
@@ -1252,22 +1612,24 @@ export class MarkupLayer {
       labelObj = this._makeLabel(obj);
       this._skipSnap = true; this.canvas.add(labelObj); this._skipSnap = false;
     }
-    labelObj.set('text', text);
-    this._syncLabel(obj);
+    if (labelObj.data) labelObj.data._fullText = text;   // guardar el texto completo
+    this._syncLabel(obj);                                 // envuelve + recorta a la figura
     this.canvas.renderAll();
     this._notifyLocalChange();   // sincronizar la etiqueta/título en tiempo real
   }
 
-  /** Construye la IText centrada en la figura */
+  /** Construye la Textbox centrada en la figura (se envuelve a su ancho) */
   _makeLabel(obj) {
     const center = obj.getCenterPoint();
-    const labelObj = new fabric.IText('', {
+    const PAD = 8;
+    const w = Math.max(24, (obj.getScaledWidth ? obj.getScaledWidth() : (obj.width || 120)) - PAD * 2);
+    const labelObj = new fabric.Textbox('', {
       left: center.x, top: center.y, originX:'center', originY:'center',
-      fontSize: 16, fontFamily:'Arial', fill: obj.stroke || this.strokeColor,
-      textAlign:'center', editable:true, selectable:true,
+      width: w, fontSize: 16, fontFamily:'Arial', fill: obj.stroke || this.strokeColor,
+      textAlign:'center', editable:true, selectable:true, splitByGrapheme:true,
     });
     labelObj.data = {
-      type:'shape-label', labelId: obj.data.labelId,
+      type:'shape-label', labelId: obj.data.labelId, _fullText: '',
       autor:this.currentUser, fecha:new Date().toISOString(),
     };
     this._bindLabelExit(labelObj);
@@ -1278,15 +1640,27 @@ export class MarkupLayer {
     if (labelObj._exitHandlerBound) return;
     labelObj._exitHandlerBound = true;
     labelObj.on('editing:exited', () => {
-      if (!labelObj.text.trim()) { this.canvas.remove(labelObj); this.canvas.renderAll(); }
-      else this._snapshot();
+      const raw = labelObj.text || '';
+      if (!raw.trim()) { this.canvas.remove(labelObj); this.canvas.renderAll(); this._notifyLocalChange(); return; }
+      if (labelObj.data) labelObj.data._fullText = raw;    // el texto tecleado es el completo
+      const shape = this._shapeOfLabel(labelObj);
+      if (shape) this._syncLabel(shape);                    // envolver + recortar a la figura
+      this.canvas.renderAll();
+      this._snapshot();
       this._notifyLocalChange();
     });
     // Mientras se escribe (doble clic in-situ) → sincronizar en tiempo real
     labelObj.on('changed', () => this._notifyLocalChange());
   }
 
-  /** Doble-clic: edita la etiqueta in-situ */
+  /** Localiza la figura dueña de una etiqueta por su labelId. */
+  _shapeOfLabel(labelObj) {
+    const id = labelObj?.data?.labelId;
+    if (!id) return null;
+    return this.canvas.getObjects().find(o => o.data?.labelId === id && o.data?.type !== 'shape-label') || null;
+  }
+
+  /** Doble-clic: edita la etiqueta in-situ (mostrando el texto completo) */
   _editLabel(obj) {
     if (!obj.data) obj.data = {};
     if (!obj.data.labelId) obj.data.labelId = `lbl-${Date.now().toString(36)}`;
@@ -1296,6 +1670,12 @@ export class MarkupLayer {
       this._skipSnap = true; this.canvas.add(labelObj); this._skipSnap = false;
     } else {
       this._bindLabelExit(labelObj);
+      // Editar el texto COMPLETO (no la versión recortada con "…")
+      if (labelObj.data && labelObj.data._fullText != null) {
+        labelObj.set({ width: Math.max(24, (obj.getScaledWidth ? obj.getScaledWidth() : (obj.width || 120)) - 16), text: labelObj.data._fullText });
+        labelObj.initDimensions && labelObj.initDimensions();
+        const c = obj.getCenterPoint(); labelObj.set({ left: c.x, top: c.y }); labelObj.setCoords();
+      }
     }
     this.canvas.setActiveObject(labelObj);
     labelObj.enterEditing();
@@ -1303,10 +1683,38 @@ export class MarkupLayer {
     this.canvas.renderAll();
   }
 
-  /** Mueve la etiqueta al centro de su figura */
+  /** Ajusta la etiqueta al tamaño de su figura y la centra (envuelve + recorta con "…"). */
   _syncLabel(obj) {
     const labelObj = obj?.data?.labelId ? this._findLabel(obj.data.labelId) : null;
     if (!labelObj) return;
+    if (labelObj.type === 'textbox' && typeof labelObj.initDimensions === 'function') {
+      const PAD  = Math.round((labelObj.fontSize || 16) * 0.5);
+      const sw   = obj.getScaledWidth  ? obj.getScaledWidth()  : (obj.width  || 120);
+      const sh   = obj.getScaledHeight ? obj.getScaledHeight() : (obj.height || 60);
+      const maxW = Math.max(16, sw - PAD * 2);
+      const maxH = Math.max(labelObj.fontSize || 16, sh - PAD * 2);
+      const full = (labelObj.data && labelObj.data._fullText != null) ? labelObj.data._fullText : (labelObj.text || '');
+      if (labelObj.data) labelObj.data._fullText = full;
+      // Solo re-envolver/recortar si cambió el tamaño de la figura o el texto (no al mover)
+      if (labelObj._fitW !== maxW || labelObj._fitH !== maxH || labelObj._fitText !== full) {
+        labelObj._fitW = maxW; labelObj._fitH = maxH; labelObj._fitText = full;
+        labelObj.set({ width: maxW, text: full });
+        labelObj.initDimensions();
+        if (labelObj.height > maxH && full.length) {        // recortar al alto con "…"
+          let lo = 0, hi = full.length, best = '…';
+          while (lo <= hi) {
+            const mid  = (lo + hi) >> 1;
+            const cand = full.slice(0, mid).replace(/\s+$/, '') + '…';
+            labelObj.set('text', cand);
+            labelObj.initDimensions();
+            if (labelObj.height <= maxH) { best = cand; lo = mid + 1; } else hi = mid - 1;
+          }
+          labelObj.set('text', best);
+          labelObj.initDimensions();
+        }
+        labelObj.dirty = true;
+      }
+    }
     const center = obj.getCenterPoint();
     labelObj.set({ left: center.x, top: center.y });
     labelObj.setCoords();
@@ -1322,9 +1730,11 @@ export class MarkupLayer {
      No se serializa (se regenera desde data.adjuntos). Clic → ver en grande.
      ════════════════════════════════════════════════════════════════════ */
 
-  /** Devuelve el primer adjunto de tipo imagen de una figura, o null */
+  /** Devuelve la imagen PRINCIPAL de una figura (data.principal), o la primera. */
   _firstImageAttachment(obj) {
     const list = obj?.data?.adjuntos || [];
+    const p = obj?.data?.principal;
+    if (p != null && list[p] && (list[p].type || '').startsWith('image/')) return list[p];
     return list.find(a => (a.type || '').startsWith('image/')) || null;
   }
 
@@ -1348,31 +1758,82 @@ export class MarkupLayer {
     const att = this._firstImageAttachment(obj);
     const existing = this._findThumb(linkId);
     const show = !!att && obj.data.attShown !== false;   // visible por defecto
+    const targetW = obj.data.thumbW || 120;              // ancho objetivo (px lógicos)
 
     if (!show) { if (existing) { this.canvas.remove(existing); this.canvas.renderAll(); } return; }
 
-    // Si ya existe con la misma imagen, solo reposicionar
-    if (existing && existing.data.src === att.dataUrl) { this._syncThumb(obj); return; }
+    // Si ya existe con la misma imagen: aplicar tamaño (ancho/alto) y reposicionar
+    if (existing && existing.data.src === att.dataUrl) {
+      const ow = existing._origW || existing.width || targetW;
+      const oh = existing._origH || existing.height || targetW;
+      const targetH = obj.data.thumbH || targetW * (oh / ow);   // alto: guardado o proporcional
+      const sx = targetW / ow, sy = targetH / oh;
+      existing.set({ scaleX: sx, scaleY: sy, strokeWidth: 2 / Math.min(sx, sy) });
+      this._syncThumb(obj);
+      this.canvas.renderAll();
+      return;
+    }
     if (existing) this.canvas.remove(existing);
 
     fabric.Image.fromURL(att.dataUrl, img => {
-      const THUMB_WIDTH = 120;                          // ancho objetivo (px lógicos)
-      const scale = THUMB_WIDTH / (img.width || THUMB_WIDTH);
+      const ow = img.width || targetW, oh = img.height || targetW;
+      const targetH = obj.data.thumbH || targetW * (oh / ow);
+      const sx = targetW / ow, sy = targetH / oh;
       img.set({
-        scaleX: scale, scaleY: scale,
+        scaleX: sx, scaleY: sy,
         originX:'left', originY:'top',
-        selectable:false, evented:true,
+        // Interactiva: se puede seleccionar y REDIMENSIONAR en el plano
+        selectable:true, evented:true,
+        hasControls:true, hasBorders:true,
+        lockRotation:true, lockMovementX:true, lockMovementY:true,  // pegada a la figura
         hoverCursor:'pointer',
-        stroke:'#0ea5e9', strokeWidth: 2 / scale,  // borde visible ~2px reales
+        cornerColor:'#0ea5e9', cornerStrokeColor:'#fff', transparentCorners:false,
+        cornerSize:12, borderColor:'#0ea5e9',
+        stroke:'#0ea5e9', strokeWidth: 2 / Math.min(sx, sy),  // borde visible ~2px reales
+      });
+      // Manijas que mantienen fija la esquina superior-izquierda (pegada a la figura):
+      //  ▸ derecha (mr)  = ancho   ·  abajo (mb) = alto   ·  esquina ↘ (br) = ambas
+      img.setControlsVisibility && img.setControlsVisibility({
+        tl:false, tr:false, bl:false, br:true, ml:false, mr:true, mt:false, mb:true, mtr:false,
       });
       img.data = { type:'att-thumb', linkId, src: att.dataUrl };
+      img._origW = ow;                        // dimensiones naturales, para reescalar luego
+      img._origH = oh;
       img.isThumb = true;                     // excluida del guardado
+      img.on('scaling', () => this._onThumbResize(img, false));
+      img.on('modified', () => this._onThumbResize(img, true));
       this._skipSnap = true;
       this.canvas.add(img);
       this._skipSnap = false;
       this._syncThumb(obj);
       this.canvas.renderAll();
     });
+  }
+
+  /** Al redimensionar la miniatura en el plano: persistir ancho y alto en la figura. */
+  _onThumbResize(thumb, persist) {
+    const linkId = thumb?.data?.linkId;
+    const figure = linkId ? this.canvas.getObjects().find(o => !o.isThumb && o.data?.labelId === linkId) : null;
+    if (!figure || !figure.data) return;
+    const w = Math.max(40, Math.min(800, Math.round(thumb.getScaledWidth())));
+    const h = Math.max(40, Math.min(800, Math.round(thumb.getScaledHeight())));
+    figure.data.thumbW = w;
+    figure.data.thumbH = h;
+    thumb.set('strokeWidth', 2 / Math.min(thumb.scaleX || 1, thumb.scaleY || 1));  // borde ~2px reales
+    this.onThumbResized && this.onThumbResized(figure, w, h);   // reflejar en el panel
+    if (persist) this._notifyLocalChange && this._notifyLocalChange();
+  }
+
+  /** Ajusta el tamaño de la miniatura en el plano (deslizador del panel = uniforme).
+      Escala ancho y alto por el mismo factor conservando la proporción actual. */
+  setThumbWidth(obj, width) {
+    if (!obj || !obj.data) return;
+    const newW = Math.max(40, Math.min(800, parseInt(width, 10) || 120));
+    const curW = obj.data.thumbW || 120;
+    const curH = obj.data.thumbH || curW;
+    obj.data.thumbW = newW;
+    obj.data.thumbH = Math.round(curH * (newW / curW));   // mantener la proporción actual
+    this.refreshThumb(obj);
   }
 
   /** Coloca la miniatura junto a la esquina superior derecha de la figura */
@@ -1404,6 +1865,41 @@ export class MarkupLayer {
     this.canvas.renderAll();   // render síncrono → cambio visible al instante
   }
 
+  /** Tamaño de texto EFECTIVO de una figura de texto (texto/nota/globo). */
+  getObjFontSize(obj) {
+    if (!obj) return 16;
+    const t = obj.data?.type;
+    if (t === 'text') return Math.round((obj.fontSize || 16) * (obj.scaleY || 1));
+    if (t === 'note' || t === 'callout') {
+      const txt = this._figureTextObj(obj);
+      return Math.round((txt ? txt.fontSize : 16) * (obj.scaleY || 1));
+    }
+    return 16;
+  }
+
+  /** Cambia el tamaño del texto de una figura de texto. Para nota/globo escala
+      toda la figura, de modo que la caja se adapta al contenido. */
+  setObjFontSize(obj, px) {
+    if (!obj) return;
+    px = Math.max(6, parseInt(px, 10) || 16);
+    const t = obj.data?.type;
+    if (t === 'text') {
+      obj.set({ fontSize: px, scaleX: 1, scaleY: 1 });
+    } else if (t === 'note' || t === 'callout') {
+      const txt = this._figureTextObj(obj);
+      const curFs = (txt && txt.fontSize) || 16;
+      const s = px / curFs;                 // la caja + el texto escalan juntos
+      obj.set({ scaleX: s, scaleY: s });
+    } else {
+      return;
+    }
+    obj.dirty = true;
+    obj.setCoords();
+    this.canvas.renderAll();
+    this._snapshot();
+    this._notifyLocalChange && this._notifyLocalChange();
+  }
+
   /* ── Sincronizar etiqueta al mover / escalar / rotar la nube ─────────── */
   _syncCloudLabel(cloudObj) {
     const cloudId = cloudObj.data?.cloudId;
@@ -1412,10 +1908,21 @@ export class MarkupLayer {
       o => o.data?.type === 'cloud-label' && o.data?.cloudId === cloudId
     );
     if (!labelObj) return;
-    const center = cloudObj.getCenterPoint();
-    labelObj.set({ left: center.x, top: center.y });
+    const pos = labelObj.data?.isRfiStamp
+      ? this._rfiStampTop(cloudObj, labelObj)   // sello RFI → parte superior
+      : cloudObj.getCenterPoint();              // etiqueta normal → centro
+    labelObj.set({ left: pos.x ?? pos.left, top: pos.y ?? pos.top });
     labelObj.setCoords();
     this.canvas.renderAll();
+  }
+
+  /** Posición (centro del sello) para anclarlo AFUERA de la nube, justo ARRIBA. */
+  _rfiStampTop(cloudObj, stampObj) {
+    const c  = cloudObj.getCenterPoint();
+    const ch = cloudObj.getScaledHeight ? cloudObj.getScaledHeight() : (cloudObj.height * (cloudObj.scaleY || 1));
+    const sh = stampObj.getScaledHeight ? stampObj.getScaledHeight() : (stampObj.height || 0);
+    const MARGIN = 10;
+    return { left: c.x, top: c.y - ch / 2 - sh / 2 - MARGIN };
   }
 
   /* ── Eliminar etiqueta de nube (al borrar la nube) ───────────────────── */
@@ -1479,7 +1986,7 @@ export class MarkupLayer {
   /* ── Texto IText ────────────────────────────────────────────────────── */
   _addText(pos) {
     const obj = new fabric.IText('Texto',{
-      left:pos.x, top:pos.y, fontSize:16, fontFamily:'Arial',
+      left:pos.x, top:pos.y, fontSize:this.fontSize, fontFamily:'Arial',
       fill:this.strokeColor, editable:true,
     });
     obj.data = { type:'text' };
@@ -1491,26 +1998,34 @@ export class MarkupLayer {
 
   /* ── Nota (post-it) ─────────────────────────────────────────────────── */
   _addNote(pos) {
-    const WIDTH=160, HEIGHT=80, PAD=10;
+    // La caja escala con el tamaño de texto (a 16px → 160×80, como antes).
+    const fs = this.fontSize, PAD = Math.round(fs*0.6);
+    const WIDTH = fs*10, HEIGHT = fs*5;
     const background = new fabric.Rect({width:WIDTH,height:HEIGHT,rx:6,ry:6,fill:'#fef3c7',stroke:'#d97706',strokeWidth:1.5,left:0,top:0,selectable:false});
-    const textObj = new fabric.IText('Nota',{left:PAD,top:PAD,fontSize:13,fontFamily:'Arial',fill:'#92400e',editable:true,selectable:false,width:WIDTH-PAD*2});
+    const textObj = new fabric.Textbox('Nota',{left:PAD,top:PAD,width:WIDTH-PAD*2,fontSize:fs,fontFamily:'Arial',fill:'#92400e',editable:false,selectable:false,splitByGrapheme:true});
+    textObj._pad = PAD;
     const group = new fabric.Group([background,textObj],{left:pos.x,top:pos.y});
-    group.data = { type:'note' };
+    group.data = { type:'note', _fullText:'Nota' };
     this._place(group);
+    this._fitFigureText(group);
     if (this.onAutoSelect) this.onAutoSelect();
   }
 
   /* ── Callout (globo con línea de apunte) ─────────────────────────────── */
   _addCallout(pos) {
-    const WIDTH=160, HEIGHT=60, PAD=10;
+    // La caja escala con el tamaño de texto (a 16px → 160×60, como antes).
+    const fs = this.fontSize, PAD = Math.round(fs*0.6);
+    const WIDTH = fs*10, HEIGHT = Math.round(fs*3.75);
     const bubbleX=30, bubbleY=-70;
     const background = new fabric.Rect({left:bubbleX,top:bubbleY,width:WIDTH,height:HEIGHT,rx:8,ry:8,fill:'#eff6ff',stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
     const tip        = new fabric.Triangle({left:bubbleX+WIDTH/2-6,top:bubbleY+HEIGHT,width:12,height:14,fill:'#3b82f6',selectable:false});
     const line       = new fabric.Line([bubbleX+WIDTH/2,bubbleY+HEIGHT+14,0,0],{stroke:'#3b82f6',strokeWidth:1.5,selectable:false});
-    const textObj    = new fabric.IText('Comentario',{left:bubbleX+PAD,top:bubbleY+PAD,fontSize:12,fontFamily:'Arial',fill:'#1e40af',editable:true,selectable:false,width:WIDTH-PAD*2});
+    const textObj    = new fabric.Textbox('Comentario',{left:bubbleX+PAD,top:bubbleY+PAD,width:WIDTH-PAD*2,fontSize:fs,fontFamily:'Arial',fill:'#1e40af',editable:false,selectable:false,splitByGrapheme:true});
+    textObj._pad = PAD;
     const group      = new fabric.Group([line,background,tip,textObj],{left:pos.x,top:pos.y,originX:'center',originY:'bottom'});
-    group.data       = { type:'callout' };
+    group.data       = { type:'callout', _fullText:'Comentario' };
     this._place(group);
+    this._fitFigureText(group);
     if (this.onAutoSelect) this.onAutoSelect();
   }
 
@@ -1549,35 +2064,42 @@ export class MarkupLayer {
     }
     this._pendingImagePos = null;
 
-    const ACCENT = '#f97316';
-    // Glifo de cámara (cuerpo + lente) en el espacio 24×24 del set de iconos
-    const CAM = 'M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9'
-              + 'a2 2 0 0 0-2-2h-3l-2.5-3z M15 13a3 3 0 1 0-6 0 3 3 0 1 0 6 0z';
-    const glyph = new fabric.Path(CAM, {
+    const ACCENT = '#e1251b';   // rojo AICSA (coherente con la app)
+    // Glifo de IMAGEN (marco + sol + montaña) en el espacio 24×24 del set de iconos
+    const IMG = 'M5 3 H19 A2 2 0 0 1 21 5 V19 A2 2 0 0 1 19 21 H5 A2 2 0 0 1 3 19 V5 A2 2 0 0 1 5 3 Z'
+              + ' M10.2 8.6 A1.8 1.8 0 1 1 6.6 8.6 A1.8 1.8 0 1 1 10.2 8.6 Z'
+              + ' M4 17.5 L9 11.5 L13.5 16 L17 12 L21 16';
+    const glyph = new fabric.Path(IMG, {
       fill: '', stroke: '#fff', strokeWidth: 2,
       strokeLineJoin: 'round', strokeLineCap: 'round',
       originX: 'center', originY: 'center',
     });
-    const GLYPH_TARGET_HEIGHT = 19;
+    const GLYPH_TARGET_HEIGHT = 20;
     const glyphScale = GLYPH_TARGET_HEIGHT / (glyph.height || GLYPH_TARGET_HEIGHT);
     glyph.scale(glyphScale);
+    glyph.set({ left: 0, top: 0 });   // centrar exactamente sobre el badge (origen centro)
+    // Badge redondeado con sombra sutil (aro claro exterior + relleno de acento)
+    const halo = new fabric.Rect({
+      width: 44, height: 38, rx: 12, ry: 12,
+      fill: 'rgba(0,0,0,0.18)', originX: 'center', originY: 'center', top: 1.5,
+    });
     const badge = new fabric.Rect({
-      width: 40, height: 34, rx: 9, ry: 9,
+      width: 42, height: 36, rx: 11, ry: 11,
       fill: ACCENT, stroke: '#fff', strokeWidth: 2.5,
       originX: 'center', originY: 'center',
     });
     const tip = new fabric.Triangle({
-      width: 14, height: 10, fill: ACCENT, stroke: '#fff', strokeWidth: 1.5,
-      angle: 180, originX: 'center', originY: 'center', top: 21,
+      width: 15, height: 11, fill: ACCENT, stroke: '#fff', strokeWidth: 1.5,
+      angle: 180, originX: 'center', originY: 'center', top: 22,
     });
-    const group = new fabric.Group([tip, badge, glyph], {
+    const group = new fabric.Group([halo, tip, badge, glyph], {
       left: centerX, top: centerY, originX: 'center', originY: 'bottom',
       hoverCursor: 'pointer',
     });
     group.data = {
       type: 'photo-pin',
       name: name || 'imagen',
-      attShown: false,                                   // vista limpia: sin previa grande
+      attShown: true,                                    // la imagen se muestra por defecto
       adjuntos: [{
         name: name || 'imagen',
         type: (type || '').startsWith('image/') ? type : 'image/png',
@@ -1586,6 +2108,7 @@ export class MarkupLayer {
       }],
     };
     this._place(group);
+    this.refreshThumb(group);   // mostrar la imagen de inmediato (visible por defecto)
   }
 
   /* ── Etiqueta profesional (borde doble ± trama diagonal) ────────────── */
@@ -1740,6 +2263,15 @@ export class MarkupLayer {
     );
   }
 
+  /** Serializa los objetos ligados a un cloudId (la nube + su sello/etiqueta RFI).
+      Se usa para autoguardar SOLO esa figura sin arrastrar las demás marcas. */
+  getObjectsJSONByCloudId(cloudId) {
+    if (!cloudId) return [];
+    return this._markupObjs()
+      .filter(o => !o.isThumb && o.data?.cloudId === cloudId)
+      .map(o => o.toObject(['data','name']));
+  }
+
   /** Avisa (con debounce) que el usuario local cambió su capa. */
   _notifyLocalChange() {
     if (this._applyingRemote || !this.onLocalChange) return;
@@ -1884,6 +2416,7 @@ export class MarkupLayer {
   clearMyMarkup() {
     const mine = this._markupObjs().filter(
       o => !o.data?.remoto && (o.data?.autor || 'Anónimo') === this.currentUser
+           && !this._isLockedRfiCloud(o)   // las nubes RFI vinculadas no se eliminan
     );
     mine.forEach(o => {
       if (o.data?.type === 'cloud' && o.data?.cloudId) this._removeCloudLabel(o.data.cloudId);
@@ -1916,6 +2449,30 @@ export class MarkupLayer {
 
   /** logicalHeight de la página actual (para XFDF) */
   getPageHeight() { return this._pdfH; }
+
+  /** Tamaño lógico de la página actual, en puntos PDF (para exportar a PDF). */
+  getPageSize() { return { w: this._pdfW, h: this._pdfH }; }
+
+  /**
+   * Exporta EXACTAMENTE el área de la hoja (sin los márgenes del lienzo que sí
+   * incluye exportDocument), con el fondo y las marcas visibles. Es la base de
+   * la descarga en PDF "con marcas": el ráster encaja 1:1 con la página.
+   */
+  exportPageArea(multiplier = 2, format = 'jpeg', quality = 0.95) {
+    if (!this._pdfW || !this._pdfH) return this.exportPNG(multiplier);
+    const savedViewport = this.canvas.viewportTransform.slice();
+    this._clearDetail();                                     // fondo base completo, sin el tile de zoom
+    this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);    // 1:1 con el espacio lógico
+    this.canvas.renderAll();
+    const url = this.canvas.toDataURL({
+      format, quality, multiplier,
+      left: 0, top: 0, width: this._pdfW, height: this._pdfH,
+    });
+    this.canvas.setViewportTransform(savedViewport);
+    this.canvas.renderAll();
+    this._scheduleDetail();
+    return url;
+  }
 
   /* ── Undo / Redo ──────────────────────────────────────────────────── */
   undo() {

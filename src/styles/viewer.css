@@ -44,12 +44,12 @@
 
   /* ── Superficies / chrome (gris AICSA) ── */
   --bg: #202225;              /* marco exterior (casi nunca visible) */
-  --bg-toolbar: #d3d5d8;      /* barra superior, riel, paneles, menús */
-  --bg-canvas: #e8e9eb;       /* fondo del lienzo (detrás del PDF) */
+  --bg-toolbar: #F7F7F7;      /* barra superior, riel, paneles, menús */
+  --bg-canvas: #aeaeae;       /* fondo del lienzo (detrás del PDF) */
   --surface-hover: rgba(0,0,0,.07);  /* hover sutil sobre cualquier superficie clara */
   --surface-inset: #ffffff;   /* inputs, campos, fondos hundidos */
-  --rail-grad-1: #dadce0;     /* degradado del riel (arriba) */
-  --rail-grad-2: #cbced2;     /* degradado del riel (abajo) */
+  --rail-grad-1: #F7F7F7;     /* degradado del riel (arriba) */
+  --rail-grad-2: #eceaea;     /* degradado del riel (abajo) */
   --border: #a8abb0;          /* visible contra chrome e inputs */
 
   /* ── Texto ── */
@@ -156,6 +156,30 @@ body {
   padding: 0;
   justify-content: center;
   font-size: var(--fs-4xl);
+}
+/* Nube RFI: nube roja con la etiqueta "RFI" superpuesta (para distinguirla de la normal) */
+.tool-rail .rfi-cloud-btn { color: var(--aicsa-red); }
+@media (hover: hover) {
+  .tool-rail .rfi-cloud-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--aicsa-red); }
+}
+.rfi-cloud-ic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rfi-cloud-tag {
+  position: absolute;
+  bottom: 100%;               /* justo arriba del icono */
+  left: 100%;                 /* alineado a la derecha */
+  transform: translate(-70%, 4px);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .2px;
+  line-height: 1;
+  color: currentColor;
+  pointer-events: none;
+  white-space: nowrap;
 }
 .rail-sep {
   width: 28px;
@@ -265,16 +289,21 @@ body {
   transition: background .13s;
   user-select: none;
   flex-shrink: 0;
+  touch-action: manipulation;   /* tap inmediato en táctil, sin doble-tap-zoom */
 }
-.tb-btn:hover:not(:disabled)          { background: var(--surface-hover); }
 .tb-btn:disabled                       { opacity: .35; cursor: not-allowed; }
 .tb-btn.tb-icon                        { width: 28px; padding: 0; justify-content: center; font-size: var(--fs-xl); }
 .tb-btn-primary                        { background: var(--accent); color: #fff; }
-.tb-btn-primary:hover:not(:disabled)   { background: var(--accent-strong); }
 .tb-btn-active                         { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
-.tb-btn-danger:hover:not(:disabled)    { background: var(--danger); color: #fff; }
 .tb-btn-save                           { background: transparent; color: var(--text); border: 1px solid var(--n-700); }
-.tb-btn-save:hover:not(:disabled)      { background: var(--surface-hover); border-color: var(--n-900); }
+/* Hover SÓLO en dispositivos con puntero real. En táctil el :hover se queda
+   "pegado" y, por su mayor especificidad, tapaba el rojo del botón activo. */
+@media (hover: hover) {
+  .tb-btn:hover:not(:disabled)          { background: var(--surface-hover); }
+  .tb-btn-primary:hover:not(:disabled)  { background: var(--accent-strong); }
+  .tb-btn-danger:hover:not(:disabled)   { background: var(--danger); color: #fff; }
+  .tb-btn-save:hover:not(:disabled)     { background: var(--surface-hover); border-color: var(--n-900); }
+}
 
 /* Herramientas activas */
 .tb-tool.tb-btn-active {
@@ -307,24 +336,57 @@ body {
 
 /* Empuja el grupo Guardar/Descargar (y lo que le sigue) hacia la derecha */
 .tb-push-right { margin-left: auto; }
+/* Spacer flexible: empuja el grupo derecho al extremo aunque algún botón se oculte */
+.tb-spacer { flex: 1 1 auto; min-width: 6px; align-self: stretch; }
 
 .tb-status {
   display: none;   /* leyendas de estado ocultas (Sin documento, Renderizando…, etc.) */
 }
+
+/* Campo etiquetado (control + rótulo arriba) — mismo patrón que .tb-color-wrap */
+.tb-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;          /* rótulo centrado sobre su control */
+  gap: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tb-field > span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1;
+  white-space: nowrap;
+}
+.tb-field-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.tb-field-val {
+  font-size: var(--fs-2xs);
+  color: var(--text);
+  font-weight: 600;
+  min-width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.tb-field .tb-select { height: 22px; }
 
 /* Color inputs */
 .tb-color-wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
+  gap: 3px;
   cursor: pointer;
   flex-shrink: 0;
 }
 .tb-color-wrap span {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   line-height: 1;
+  white-space: nowrap;
 }
 .tb-color-wrap input[type="color"] {
   width: 24px;
@@ -435,6 +497,15 @@ body {
 .tb-caret .lucide             { width: 12px; height: 12px; opacity: .7; }
 .tool-gicon .lucide           { width: 19px; height: 19px; }
 .empty-icon .lucide           { width: 60px; height: 60px; stroke-width: 1.3; }
+/* Iconos inline que reemplazan emojis en textos y encabezados */
+.empty-tools span             { display: inline-flex; align-items: center; gap: 6px; }
+.empty-tools span .lucide     { width: 14px; height: 14px; }
+.modal-box h3 .lucide         { width: 18px; height: 18px; vertical-align: -3px; margin-right: 4px; }
+.modal-head span .lucide      { width: 17px; height: 17px; vertical-align: -3px; margin-right: 4px; }
+.ap-title .lucide             { width: 16px; height: 16px; vertical-align: -3px; margin-right: 4px; }
+.cal-head-ic .lucide          { width: 18px; height: 18px; vertical-align: -3px; }
+.stamp-opt .lucide            { width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; }
+.tip-type .lucide, .tip-fecha .lucide { width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; }
 .ap-close .lucide,
 #btn-area-close .lucide,
 .users-apply-btn .lucide      { width: 15px; height: 15px; }
@@ -453,7 +524,7 @@ body {
 
 /* ── Tabs de calibración ── */
 /* ══════════ Modal de calibración de escala ══════════ */
-.cal-box { width: 340px; padding: 0; overflow: hidden; }
+.cal-box { width: min(340px, 92vw); padding: 0; overflow-y: auto; max-height: calc(100vh - var(--toolbar-h) - 34px); }
 
 /* Cabecera con título + botón cerrar */
 .cal-head {
@@ -769,7 +840,12 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,.35);
   pointer-events: none;
   z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
 }
+.draw-hint .lucide { width: 15px; height: 15px; flex-shrink: 0; color: var(--accent); }
 
 /* ── Toast de guardado ── */
 .save-toast {
@@ -851,33 +927,160 @@ body {
   bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
   background: var(--bg-toolbar);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.55);
-  padding: 8px 14px;
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0,0,0,.55);
+  padding: 8px 12px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   z-index: 300;
   font-size: var(--fs-base);
   color: var(--text);
 }
-.compare-bar .cmp-icon { color: var(--accent); display: inline-flex; }
-.compare-bar .cmp-revs { display: flex; flex-direction: column; gap: 2px; line-height: 1.3; }
-.compare-bar .cmp-a b { color: #60a5fa; }
-.compare-bar .cmp-b b { color: var(--danger-soft); }
-.compare-bar .cmp-revs span span { color: var(--text-muted); }
-.compare-bar .cmp-slider { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
-.compare-bar .cmp-slider input[type="range"] { width: 130px; accent-color: var(--accent); cursor: pointer; }
-.compare-bar .cmp-tint { display: flex; align-items: center; gap: 5px; color: var(--text-muted); cursor: pointer; user-select: none; }
-.compare-bar #btn-compare-close,
-.compare-bar #btn-compare-change {
-  background: transparent; border: none; color: var(--text-muted);
-  cursor: pointer; display: inline-flex; padding: 4px; border-radius: 5px;
+/* Carpeta: ahora es un botón que cambia el plano a comparar */
+.compare-bar .cmp-icon {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 7px;
+  transition: background .13s, color .13s;
 }
-.compare-bar #btn-compare-close:hover,
-.compare-bar #btn-compare-change:hover { background: var(--surface-hover); color: var(--text); }
+.compare-bar .cmp-icon:hover { background: var(--accent-bg); color: var(--accent-strong); }
+.compare-bar .cmp-icon .lucide { width: 19px; height: 19px; }
+
+/* Dropdown de descargar como imagen — reutiliza el look de los submenús
+   (.tb-dropdown / .tb-drop-item), pero anclado y abriendo hacia arriba. */
+.cmp-dl-wrap { position: relative; display: inline-flex; }
+.cmp-dl-menu {
+  display: none;
+  flex-direction: column;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  min-width: 232px;
+  max-width: calc(100vw - 24px);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  padding: 4px;
+  z-index: 400;
+}
+.cmp-dl-menu.open { display: flex; }
+
+/* Barra de confirmación al seleccionar un área para descargar */
+.region-bar {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0,0,0,.35);
+  padding: 8px 10px 8px 14px;
+  z-index: 350;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+.region-bar-msg { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.region-bar-msg .lucide { width: 16px; height: 16px; color: var(--accent); }
+.region-bar-actions { display: flex; align-items: center; gap: 6px; }
+.region-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .13s, border-color .13s, opacity .13s;
+}
+.region-btn .lucide { width: 15px; height: 15px; }
+.region-btn.region-cancel:hover { background: var(--surface-hover); }
+.region-btn.region-ok { background: var(--accent); color: #fff; border-color: transparent; }
+.region-btn.region-ok:hover:not(:disabled) { background: var(--accent-strong); }
+.region-btn.region-ok:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Revisiones A/B — una línea cada una, nombre truncado con tooltip */
+.compare-bar .cmp-revs { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.compare-bar .cmp-rev { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.compare-bar .cmp-tag {
+  font-size: var(--fs-2xs); font-weight: 700; letter-spacing: .3px;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 20px;
+  flex-shrink: 0; line-height: 1.4;
+}
+.compare-bar .cmp-tag-a { background: rgba(37,99,235,.15); color: #2563eb; }
+.compare-bar .cmp-tag-b { background: rgba(225,29,72,.15); color: #e11d48; }
+.compare-bar .cmp-name {
+  color: var(--text); font-size: var(--fs-base);
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Separadores verticales */
+.compare-bar .cmp-div { width: 1px; align-self: stretch; background: var(--border); flex-shrink: 0; margin: 2px 0; }
+
+.compare-bar .cmp-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.compare-bar .cmp-actions button {
+  width: 30px; height: 30px;
+  background: transparent; border: none; color: var(--text-muted);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 7px; transition: background .13s, color .13s;
+}
+.compare-bar .cmp-actions button .lucide { width: 17px; height: 17px; }
+.compare-bar .cmp-actions button:hover { background: var(--surface-hover); color: var(--text); }
+/* En modo ajuste el botón muestra ✓ y se pone verde = "Aplicar / confirmar" */
+.compare-bar #btn-compare-align.tb-btn-active { background: var(--success); color: #fff; }
+.compare-bar #btn-compare-align.tb-btn-active:hover { background: var(--success-strong); color: #fff; }
+
+/* Mientras se calcula el diff, la barra queda bloqueada (no se aceptan cambios) */
+.compare-bar.is-busy { pointer-events: none; }
+.compare-bar.is-busy .cmp-actions { opacity: .45; }
+
+/* ── Loader ligero: calculando diferencias de comparación ── */
+.compare-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-size: var(--fs-md);
+  color: var(--text);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .20);
+  z-index: 300;
+  pointer-events: none;
+}
+.compare-loading .cmp-spin {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid var(--accent-bg-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: save-spin .7s linear infinite;
+  flex-shrink: 0;
+}
 .area-panel button {
   background: transparent;
   border: none;
@@ -921,7 +1124,9 @@ body {
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 28px;
-  width: 380px;
+  width: min(380px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: 0 16px 48px rgba(0,0,0,.7);
 }
 
@@ -997,6 +1202,9 @@ body {
 }
 .modal-actions .tb-btn,
 .confirm-btn {
+  display: inline-flex;       /* icono ✕ + texto en línea, centrados */
+  align-items: center;
+  gap: 6px;
   height: 34px;
   min-width: 110px;
   padding: 0 16px;
@@ -1004,6 +1212,9 @@ body {
   border-radius: 0;
   flex: none;                 /* nada de botones a todo el ancho: tamaño consistente */
 }
+/* Icono de los botones del footer (✕ Cancelar): algo menor que el del toolbar */
+.modal-actions .tb-btn .lucide,
+.confirm-btn .lucide { width: 15px; height: 15px; }
 /* Footers a todo el ancho también en cajas con padding propio (sello / confirmación) */
 .modal-stamp .modal-actions   { margin: 12px -28px -28px; }
 .confirm-card .confirm-actions { margin: 0 -22px -18px; }
@@ -1288,26 +1499,87 @@ body {
 }
 .ap-att-add:hover { border-color: var(--accent); background: #262d42; }
 .ap-att-add .lucide { width: 15px; height: 15px; }
-.ap-att-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.ap-att-item { position: relative; display: flex; flex-direction: column; gap: 3px; }
-.ap-att-thumb {
-  width: 100%; height: 56px; padding: 0; cursor: pointer;
-  background: #11141d; border: 1px solid var(--border); border-radius: 5px;
-  overflow: hidden; display: flex; align-items: center; justify-content: center;
+/* ── Carrusel de adjuntos ── */
+.ap-car-empty { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 0; }
+.ap-carousel { display: flex; flex-direction: column; gap: 8px; }
+.ap-car-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 150px;
+  overflow: hidden;
 }
-.ap-att-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.ap-att-fileicon .lucide { width: 26px; height: 26px; color: var(--text-muted); }
-.ap-att-name {
-  font-size: var(--fs-2xs); color: var(--text-muted); line-height: 1.2;
+.ap-car-viewport {
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* La imagen se adapta al espacio SIN recortarse ni deformarse */
+.ap-car-img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
+.ap-car-fileicon .lucide { width: 42px; height: 42px; color: var(--text-muted); }
+.ap-car-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff;
+  cursor: pointer; z-index: 2;
+  transition: background .13s;
+}
+.ap-car-nav:hover { background: var(--accent); }
+.ap-car-nav .lucide { width: 18px; height: 18px; }
+.ap-car-prev { left: 6px; }
+.ap-car-next { right: 6px; }
+.ap-car-badge {
+  position: absolute;
+  top: 6px; left: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 20px;
+  background: var(--accent); color: #fff;
+  font-size: var(--fs-2xs); font-weight: 700;
+}
+.ap-car-badge .lucide { width: 11px; height: 11px; }
+.ap-car-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ap-car-name {
+  font-size: var(--fs-xs); color: var(--text); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ap-att-del {
-  position: absolute; top: 3px; right: 3px;
-  width: 18px; height: 18px; border: none; border-radius: 4px;
-  background: rgba(0,0,0,.6); color: #fff; font-size: var(--fs-sm); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+.ap-car-count { font-size: var(--fs-2xs); color: var(--text-muted); flex-shrink: 0; }
+.ap-car-actions { display: flex; align-items: center; gap: 6px; }
+.ap-car-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-inset);
+  color: var(--text); font-size: var(--fs-xs); cursor: pointer;
+  transition: background .13s, border-color .13s, color .13s;
 }
-.ap-att-del:hover { background: var(--danger); }
+.ap-car-btn:first-child { flex: 1; justify-content: center; }
+.ap-car-btn .lucide { width: 15px; height: 15px; }
+.ap-car-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ap-car-btn:disabled { opacity: .6; cursor: default; color: var(--accent); border-color: var(--accent-border); }
+.ap-car-btn-del:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.ap-car-dots { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.ap-car-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  border: none; padding: 0; cursor: pointer;
+  background: var(--border);
+  transition: background .13s, transform .13s;
+}
+.ap-car-dot.on { background: var(--text); transform: scale(1.2); }
+.ap-car-dot.principal { background: var(--accent); }
 
 /* Mini-toolbar flotante sobre la figura seleccionada */
 .fig-toolbar {
@@ -1526,14 +1798,17 @@ body {
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: var(--fs-base);
+  color: var(--text-muted);
   padding: 2px 3px;
-  opacity: .45;
+  opacity: .55;
   flex-shrink: 0;
-  transition: opacity .12s;
-  line-height: 1;
+  transition: opacity .12s, color .12s;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
 }
-.author-toggle:hover    { opacity: 1; }
+.author-toggle .lucide { width: 16px; height: 16px; }
+.author-toggle:hover    { opacity: 1; color: var(--text); }
 .author-hidden .author-toggle { opacity: .7; }
 
 .author-empty {
@@ -1773,6 +2048,16 @@ body {
   font-size: var(--fs-xs);
   color: var(--success);
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.author-presence-badge .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
 }
 
 /* ── Banner de solo lectura en el panel de propiedades ── */
@@ -1823,9 +2108,12 @@ body {
   color: var(--text-muted);
   border-radius: 5px;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 4px 7px;
   font-size: var(--fs-base);
+  display: inline-flex;
+  align-items: center;
 }
+.ap-link-clear .lucide { width: 14px; height: 14px; }
 .ap-link-clear:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
 
 /* ── Modal: selector de plano destino (hipervínculo) ── */
@@ -1893,6 +2181,63 @@ body {
   font-size: var(--fs-base);
 }
 
+/* Fila de ACCIÓN del selector (p. ej. "Crear" en el de RFI): va justo debajo del
+   buscador y fuera de la lista, para que el filtro no la oculte. El margen
+   superior lo aporta el propio buscador (.plano-search). */
+.plano-row-action {
+  flex: none;
+  width: auto;
+  margin: 0 14px 2px;
+  border: 1px dashed var(--border);
+  color: var(--accent);
+  font-weight: 600;
+}
+.plano-row-action .lucide { color: var(--accent); }
+@media (hover: hover) {
+  .plano-row-action:hover { background: var(--accent-bg); border-color: var(--accent); }
+}
+
+/* ── Zona para comparar contra un PDF local (modal Comparar) ── */
+.cmp-drop {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 11px;
+  margin: 12px 14px 0;
+  padding: 12px 14px;
+  text-align: left;
+  background: var(--surface-inset);
+  border: 1px dashed var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: background .13s, border-color .13s;
+}
+.cmp-drop .lucide { width: 20px; height: 20px; color: var(--accent); flex-shrink: 0; }
+.cmp-drop span    { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cmp-drop b       { font-size: var(--fs-md); font-weight: 600; }
+.cmp-drop small   { font-size: var(--fs-base); color: var(--text-muted); }
+@media (hover: hover) {
+  .cmp-drop:hover { background: var(--surface-hover); border-color: var(--accent); }
+}
+/* Arrastrando un archivo encima */
+.cmp-drop.is-over {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  border-style: solid;
+}
+/* Separador "o elige un plano del repositorio" */
+.cmp-or {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+  margin: 12px 14px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+}
+.cmp-or::before,
+.cmp-or::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
 /* ════════ Riel flotante — mejoras visuales ════════ */
 .tool-rail {
   gap: 6px;
@@ -1909,9 +2254,11 @@ body {
   color: var(--text-muted);
   transition: background .15s, color .15s, box-shadow .15s, transform .08s;
 }
-.tool-rail .tb-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
+@media (hover: hover) {
+  .tool-rail .tb-btn:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
 }
 .tool-rail .tb-btn:active:not(:disabled) { transform: scale(.93); }
 .tool-rail .tb-btn.tb-btn-active {
@@ -1923,7 +2270,7 @@ body {
 .tool-rail .tb-btn .lucide { width: 20px; height: 20px; }
 
 /* Separadores más sutiles */
-.rail-sep { width: 26px; background: #ffffff14; margin: 4px 0; }
+.rail-sep { width: 26px; background: var(--border); margin: 4px 0; }
 
 /* ── Botones de GRUPO (con submenú): icono + etiqueta + chevron ── */
 .tool-rail .rail-group {
@@ -2008,3 +2355,86 @@ body {
 .confirm-ok { background: var(--accent); color: #fff; border-color: transparent; }
 .confirm-ok:hover { filter: brightness(1.08); }
 .confirm-ok.confirm-danger { background: var(--danger); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RESPONSIVE — adaptación a distintos tamaños de pantalla
+   La app es "desktop-first" (un visor de planos). Estas reglas la degradan
+   con gracia en laptops pequeñas, tablets y teléfonos, sin tocar el layout
+   base de escritorio. El riel flotante se re-encaja solo al redimensionar
+   (ver rail-drag.ts), así que aquí sólo ajustamos tamaños.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Laptops pequeñas / tablets en horizontal (≤ 1024px) ── */
+@media (max-width: 1024px) {
+  .saf-toolbar { gap: 2px; padding: 0 6px; }
+  .annot-panel { width: 280px; }
+  .empty-box   { max-width: 90vw; }
+}
+
+/* ── Tablets / teléfonos grandes (≤ 820px) ── */
+@media (max-width: 820px) {
+  /* Panel de propiedades: no invade tanto el lienzo */
+  .annot-panel { width: min(300px, 84vw); }
+
+  /* La barra de comparación se envuelve y se compacta */
+  .compare-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 10px;
+    bottom: 12px;
+    padding: 8px 10px;
+  }
+  .compare-bar .cmp-div { display: none; }
+
+  /* Pantalla vacía más compacta */
+  .empty-box    { padding: 30px 26px; }
+  .empty-box h2 { font-size: var(--fs-4xl); }
+  .empty-box p  { font-size: var(--fs-md); }
+
+  /* Panel de área no se sale por el borde */
+  .area-panel { right: 12px; bottom: 12px; }
+}
+
+/* ── Teléfonos (≤ 560px) ── */
+@media (max-width: 560px) {
+  /* El panel de propiedades pasa a ocupar casi todo el ancho (hoja) */
+  .annot-panel {
+    width: 100vw;
+    box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+  }
+
+  /* Riel un poco más compacto para dejar sitio al plano */
+  .tool-rail            { width: 46px; }
+  .tool-rail .tb-btn    { width: 36px; height: 36px; }
+  .tool-rail.rail-horizontal { height: 50px; }
+
+  /* Barra de comparación de borde a borde */
+  .compare-bar {
+    left: 8px;
+    right: 8px;
+    transform: none;
+    max-width: none;
+    gap: 8px;
+  }
+  .compare-bar .cmp-revs { flex: 1 1 auto; min-width: 0; }
+
+  /* Modales casi a pantalla completa */
+  .modal-box { width: 94vw; padding: 22px; }
+  .modal-card, .plano-pick-card, .confirm-card { width: 94vw; }
+
+  /* Pantalla vacía: quitar los chips de herramientas para no saturar */
+  .empty-box       { padding: 24px 18px; }
+  .empty-box p     { margin-bottom: 18px; }
+  .empty-tools     { display: none; }
+  .btn-open-large  { padding: 10px 22px; font-size: var(--fs-lg); }
+
+  /* Toast de guardado de borde a borde */
+  .save-toast { max-width: calc(100vw - 24px); }
+}
+
+/* ── Pantallas bajas (≤ 560px de alto): modales con scroll interno ── */
+@media (max-height: 560px) {
+  .modal-box      { max-height: 94vh; }
+  .cal-box        { max-height: calc(100vh - var(--toolbar-h) - 20px); }
+  .plano-pick-card, .modal-card { max-height: 92vh; }
+}

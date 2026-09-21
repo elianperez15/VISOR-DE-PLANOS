@@ -30,6 +30,19 @@ export function createCollabSync(ctx: CollabSyncCtx) {
   // Estado propio de la feature
   const remoteLayers: Record<string, Record<string, string>> = {}; // [page][autor] = json
 
+  // ── Baseline PERSISTIDO en el servidor ─────────────────────────────────
+  // Refleja lo que YA está guardado del usuario (lo cargado al abrir + lo
+  // confirmado con el botón «Guardar»). Se usa para autoguardar SOLO una
+  // figura (nube RFI) o SOLO la escala, sin arrastrar las demás marcas que el
+  // usuario aún no ha guardado explícitamente.
+  const saved = { pages: {} as Record<string, string>, scale: null as any, rotation: 0 };
+
+  /** Reemplaza el baseline de páginas por una copia de `pages`. */
+  function snapshotSavedPages(pages: Record<string, string>) {
+    for (const k in saved.pages) delete saved.pages[k];
+    for (const p in pages) if (pages[p]) saved.pages[p] = pages[p];
+  }
+
   /** Emite la capa propia de la página actual a la sala (sincronización en vivo).
       NO persiste en ORDS: el guardado en servidor ocurre solo al pulsar Guardar. */
   function pushLocalLayer() {
@@ -116,6 +129,8 @@ export function createCollabSync(ctx: CollabSyncCtx) {
   /** Limpia el estado de colaboración al cambiar de plano. */
   function reset() {
     for (const k in remoteLayers) delete remoteLayers[k];
+    snapshotSavedPages({});              // el baseline se rehace al cargar el nuevo plano
+    saved.scale = null; saved.rotation = 0;
     ctx.presence.clear();
     ctx.collab.disconnect();
     const m = ctx.getMarkup(); m && m.clearPeerCursors();
@@ -140,18 +155,17 @@ export function createCollabSync(ctx: CollabSyncCtx) {
     return out;
   }
 
-  /** POST (debounced) de la capa propia → el handler ORDS hace el MERGE. */
-  /** Persiste la capa propia en ORDS de forma inmediata (lo dispara el botón Guardar).
-      Incluye marcas, alturas de página, rotación y escala parametrizada.
-      @returns true si el servidor respondió OK. */
-  async function saveNow(): Promise<boolean> {
+  /** POST del cuerpo completo a ORDS. El handler REEMPLAZA toda la capa del
+      usuario con lo enviado (no hace merge por objeto), así que `pages` debe
+      contener EXACTAMENTE lo que debe quedar persistido para este usuario. */
+  async function postSesion(pages: Record<string, string>, scale: any, rotation: number): Promise<boolean> {
     const session = ctx.getSession();
     if (session.docId == null) return false;   // archivo local: sin sala/servidor
     try {
       const sesion = {
         version: 3, docName: session.docName,
-        pages: ownPages(), pageHeights: session.pageHeights, scale: session.scale,
-        rotation: session.rotation || 0,
+        pages, pageHeights: session.pageHeights, scale,
+        rotation: rotation || 0,
       };
       const res = await fetch(API_MARKUP, {
         method: 'POST',
@@ -165,7 +179,50 @@ export function createCollabSync(ctx: CollabSyncCtx) {
         }),
       });
       return res.ok;
-    } catch (e: any) { console.warn('[SAF] saveNow:', e.message); return false; }
+    } catch (e: any) { console.warn('[SAF] postSesion:', e.message); return false; }
+  }
+
+  /** Guardado COMPLETO (lo dispara el botón «Guardar»): persiste TODAS las
+      marcas propias, la rotación y la escala. Al confirmar, actualiza el
+      baseline persistido. */
+  async function saveNow(): Promise<boolean> {
+    const session = ctx.getSession();
+    const pages = ownPages();
+    const ok = await postSesion(pages, session.scale, session.rotation || 0);
+    if (ok) {
+      snapshotSavedPages(pages);
+      saved.scale    = session.scale;
+      saved.rotation = session.rotation || 0;
+    }
+    return ok;
+  }
+
+  /** Autoguarda SOLO la escala calibrada (es global), conservando lo ya
+      guardado y SIN arrastrar las figuras que el usuario no ha guardado. */
+  async function saveScaleNow(): Promise<boolean> {
+    const session = ctx.getSession();
+    const ok = await postSesion({ ...saved.pages }, session.scale, saved.rotation);
+    if (ok) saved.scale = session.scale;
+    return ok;
+  }
+
+  /** Autoguarda SOLO los objetos indicados en `page` (p.ej. una nube RFI y su
+      sello), conservando lo ya guardado y SIN arrastrar el resto de figuras
+      locales. `objs` son objetos ya serializados (toObject). */
+  async function saveObjectsNow(page: number | string, objs: any[]): Promise<boolean> {
+    if (!objs || !objs.length) return false;
+    const session = ctx.getSession();
+    const pages: Record<string, string> = { ...saved.pages };
+    let arr: any[] = [];
+    try { arr = JSON.parse(pages[page] || '[]'); } catch (e) { arr = []; }
+    // Reemplaza versiones previas de esos objetos (dedupe por cloudId)
+    const ids = new Set(objs.map(o => o?.data?.cloudId).filter(Boolean));
+    if (ids.size) arr = arr.filter(o => !ids.has(o?.data?.cloudId));
+    arr.push(...objs);
+    pages[page] = JSON.stringify(arr);
+    const ok = await postSesion(pages, session.scale, saved.rotation);
+    if (ok) { saved.pages[page] = pages[page]; saved.scale = session.scale; }
+    return ok;
   }
 
   /** Carga las capas de todos los usuarios desde ORDS (propias editables, ajenas bloqueadas). */
@@ -183,6 +240,7 @@ export function createCollabSync(ctx: CollabSyncCtx) {
       let savedRotation: number | null = null;
       let savedScale: any = null;
       let savedScaleTs = -1;
+      const minePages: Record<string, string> = {};   // capa propia tal como está en el servidor
       (data?.capas || []).forEach((capa: any) => {
         const pages = capa?.sesion?.pages || {};
         const mine = (userId != null && String(capa.usuario_id) === String(userId)) || (capa.usuario === user);
@@ -194,16 +252,20 @@ export function createCollabSync(ctx: CollabSyncCtx) {
           if (ts >= savedScaleTs) { savedScaleTs = ts; savedScale = sc; }
         }
         for (const p in pages) {
-          if (mine) session.pages[p] = pages[p];
+          if (mine) { session.pages[p] = pages[p]; minePages[p] = pages[p]; }
           else (remoteLayers[p] = remoteLayers[p] || {})[capa.usuario] = pages[p];
         }
       });
       const markup = ctx.getMarkup(), page = ctx.getCurrentPage();
       markup && markup.setMarkupJSON(session.pages[page] || null);
       applyRemoteLayersForPage(page);
+      // Fijar el baseline persistido con lo que realmente está guardado del usuario
+      snapshotSavedPages(minePages);
+      saved.rotation = savedRotation != null ? savedRotation : (session.rotation || 0);
       // Restaurar la escala calibrada guardada (pixeles / distancia_real / unidad)
       if (savedScale) {
         session.scale = savedScale;
+        saved.scale   = savedScale;
         ctx.onScaleLoaded && ctx.onScaleLoaded(savedScale);
       }
       // Restaurar la orientación guardada (re-renderiza el fondo con esa rotación)
@@ -214,5 +276,5 @@ export function createCollabSync(ctx: CollabSyncCtx) {
     } catch (e: any) { console.warn('[SAF] loadRemoteLayersFromServer:', e.message); }
   }
 
-  return { pushLocalLayer, saveNow, broadcastScale, applyRemoteLayersForPage, start, reset, loadFromServer };
+  return { pushLocalLayer, saveNow, saveScaleNow, saveObjectsNow, broadcastScale, applyRemoteLayersForPage, start, reset, loadFromServer };
 }

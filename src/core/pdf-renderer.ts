@@ -38,6 +38,16 @@ export class PDFRenderer {
   get isLoaded()  { return this._doc !== null; }
 
   /**
+   * Bytes ORIGINALES del PDF cargado, tal cual llegaron (archivo o URL).
+   * Base de la descarga "sin marcas": es el documento intacto, vectorial.
+   * @returns {Promise<Uint8Array>}
+   */
+  async getData() {
+    if (!this._doc) throw new Error('No hay PDF cargado');
+    return await this._doc.getData();
+  }
+
+  /**
    * Renderiza una página a un data URL.
    *
    * `supersample` es el factor de sobre-muestreo respecto al tamaño lógico (1x).

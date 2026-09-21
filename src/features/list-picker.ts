@@ -13,6 +13,7 @@ export interface ListPickerCtx {
   fetchItems: () => Promise<any[]>;                 // carga (se cachea)
   toRow: (item: any) => { value: string; label: string };
   onPick: (target: any, value: string, label: string, item: any) => void;
+  onCancel?: (target: any) => void;   // se cerró SIN elegir (X, fondo o Escape)
   icon?: string;            // icono Lucide de cada fila (def. file-text)
   loadingText?: string;
   emptyText?: string;
@@ -23,17 +24,31 @@ export function createListPicker(ctx: ListPickerCtx) {
   const icon = ctx.icon || 'file-text';
   let cache: any[] | null = null;
   let target: any = null;
+  let picked = false;   // ¿se eligió un ítem antes de cerrar?
 
-  function close() { const m = $(ctx.ids.modal); if (m) m.style.display = 'none'; }
+  function close() {
+    const m = $(ctx.ids.modal); if (m) m.style.display = 'none';
+    if (!picked && ctx.onCancel) ctx.onCancel(target);   // se cerró sin elegir
+    target = null;
+  }
+
+  /** Cierra el modal desde fuera SIN disparar onCancel: la elección ya se
+      resolvió por otra vía (p. ej. el usuario subió un PDF de su equipo). */
+  function dismiss() { picked = true; close(); }
+
+  /** Invalida la caché: la próxima apertura vuelve a pedir el listado.
+      Úsalo cuando algo pudo cambiar la fuente (p. ej. se creó un RFI nuevo). */
+  function refresh() { cache = null; }
 
   /** Abre el modal para asignar al objeto `t`. */
   async function open(t: any) {
     target = t;
+    picked = false;
     const modal = $(ctx.ids.modal);
     if (!modal) return;
     $(ctx.ids.search).value = '';
     modal.style.display = 'flex';
-    $(ctx.ids.search).focus();
+    // Sin autofocus en el buscador (evita abrir el teclado y robar el foco)
     if (cache) { render(); return; }
     $(ctx.ids.list).innerHTML = `<div class="plano-empty">${ctx.loadingText || 'Cargando…'}</div>`;
     try {
@@ -75,9 +90,10 @@ export function createListPicker(ctx: ListPickerCtx) {
       const item = (cache || []).find(it => String(ctx.toRow(it).value) === value);
       const label = row.querySelector('span')?.textContent || value;
       if (target) ctx.onPick(target, value, label, item);
+      picked = true;         // evita que close() dispare onCancel
       close();
     });
   }
 
-  return { open, init };
+  return { open, init, dismiss, refresh };
 }

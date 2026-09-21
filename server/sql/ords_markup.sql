@@ -52,7 +52,11 @@ begin
   l_uid     := json_value(l_body, '$.usuario_id'  returning number);
   l_rev     := json_value(l_body, '$.id_revision' returning number);
   l_px      := json_value(l_body, '$.sesion.scale.pxPerUnit' returning number);
-  l_unidad  := json_value(l_body, '$.sesion.scale.unit');
+  -- El front envía la unidad como "unidad" (es); se acepta "unit" (en) por compat.
+  l_unidad  := json_value(l_body, '$.sesion.scale.unidad');
+  if l_unidad is null then
+    l_unidad := json_value(l_body, '$.sesion.scale.unit');
+  end if;
 
   if l_uid is null then
     l_uid := to_number(regexp_substr(nvl(:current_user, '0'), '\d+'));
@@ -169,7 +173,11 @@ begin
   l_uid     := json_value(l_body, '$.usuario_id'  returning number);
   l_rev     := json_value(l_body, '$.id_revision' returning number);
   l_px      := json_value(l_body, '$.sesion.scale.pxPerUnit' returning number);
-  l_unidad  := json_value(l_body, '$.sesion.scale.unit');
+  -- El front envía la unidad como "unidad" (es); se acepta "unit" (en) por compat.
+  l_unidad  := json_value(l_body, '$.sesion.scale.unidad');
+  if l_unidad is null then
+    l_unidad := json_value(l_body, '$.sesion.scale.unit');
+  end if;
 
   if l_uid is null then
     l_uid := to_number(regexp_substr(nvl(:current_user, '0'), '\d+'));

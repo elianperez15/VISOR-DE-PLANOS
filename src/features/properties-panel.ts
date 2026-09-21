@@ -41,15 +41,19 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
     const fecha = d.fecha
       ? new Date(d.fecha).toLocaleString('es', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
       : '';
-    const parts = [fecha];
-    if (tipo)        parts.push(`${tipo.icon} ${tipo.label}`);
-    if (d.prioridad) parts.push(d.prioridad);
-    $('ap-id-meta').textContent = parts.filter(Boolean).join('  ·  ');
+    // fecha (Date) y prioridad (enum) son valores controlados → seguro como HTML.
+    const parts = [];
+    if (fecha)       parts.push(fecha);
+    if (tipo)        parts.push(`<i data-lucide="${tipo.icon}"></i> ${tipo.label}`);
+    if (d.prioridad) parts.push(String(d.prioridad));
+    const el = $('ap-id-meta');
+    el.innerHTML = parts.join('  ·  ');
+    renderIcons(el);
   }
 
   /** Modo solo-lectura (figura de otro usuario). */
   function setReadonly(ro: boolean) {
-    ['ap-label','ap-stroke','ap-fill','ap-stroke-w','ap-opacity','ap-desc','ap-link-page',
+    ['ap-label','ap-stroke','ap-fill','ap-stroke-w','ap-font-size','ap-opacity','ap-desc','ap-link-page',
      'btn-ap-pick-plano','btn-ap-clear-plano','btn-ap-pick-rfi','btn-ap-clear-rfi']
       .forEach(id => { const el = $(id); if (el) el.disabled = ro; });
     const attach = $('btn-ap-attach'); if (attach) attach.style.display = ro ? 'none' : '';
@@ -57,25 +61,70 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
     const banner = $('ap-readonly-banner'); if (banner) banner.style.display = ro ? 'flex' : 'none';
   }
 
-  /** Pinta la grilla de adjuntos de la figura activa. */
+  let carIndex = 0;   // imagen/adjunto actual del carrusel
+
+  /** Navega el carrusel (dir: -1 / +1) de forma circular. */
+  function navAtt(dir: number) {
+    const obj = ctx.getActiveObj();
+    const n = ((obj && obj.data && obj.data.adjuntos) || []).length;
+    if (!n) return;
+    carIndex = (carIndex + dir + n) % n;
+    refreshAttachments();
+  }
+  /** Salta a un adjunto concreto del carrusel. */
+  function gotoAtt(i: number) { carIndex = i; refreshAttachments(); }
+  /** Reinicia el carrusel (al abrir otra figura): muestra la principal. */
+  function resetCarousel() {
+    const obj = ctx.getActiveObj();
+    const p = obj?.data?.principal;
+    carIndex = (typeof p === 'number' && p >= 0) ? p : 0;
+  }
+
+  /** Pinta el CARRUSEL de adjuntos de la figura activa (con imagen principal). */
   function refreshAttachments() {
     const grid = $('ap-att-grid');
     if (!grid) return;
     const obj = ctx.getActiveObj();
     const list = (obj && obj.data && obj.data.adjuntos) || [];
     $('ap-att-count').textContent = list.length ? `(${list.length})` : '';
-    grid.innerHTML = list.map((a: any, i: number) => {
-      const isImg = (a.type || '').startsWith('image/');
-      const thumb = isImg
-        ? `<img src="${a.dataUrl}" alt="">`
-        : `<span class="ap-att-fileicon"><i data-lucide="file"></i></span>`;
-      return `<div class="ap-att-item" title="${a.name}">
-        <button class="ap-att-thumb" data-act="open" data-i="${i}">${thumb}</button>
-        <span class="ap-att-name">${a.name}</span>
-        <button class="ap-att-del" data-act="del" data-i="${i}" title="Quitar">✕</button>
+
+    if (!list.length) { grid.innerHTML = '<div class="ap-car-empty">Sin adjuntos aún</div>'; return; }
+    if (carIndex >= list.length) carIndex = list.length - 1;
+    if (carIndex < 0) carIndex = 0;
+
+    const principal = (typeof obj.data.principal === 'number') ? obj.data.principal : 0;
+    const a = list[carIndex];
+    const isImg = (a.type || '').startsWith('image/');
+    const isPrincipal = carIndex === principal;
+    const preview = isImg
+      ? `<img class="ap-car-img" src="${a.dataUrl}" alt="">`
+      : `<span class="ap-car-fileicon"><i data-lucide="file"></i></span>`;
+    const many = list.length > 1;
+
+    grid.innerHTML = `
+      <div class="ap-carousel">
+        <div class="ap-car-stage">
+          ${many ? `<button class="ap-car-nav ap-car-prev" data-act="prev" title="Anterior"><i data-lucide="chevron-left"></i></button>` : ''}
+          <button class="ap-car-viewport" data-act="open" data-i="${carIndex}" title="Ampliar">${preview}</button>
+          ${many ? `<button class="ap-car-nav ap-car-next" data-act="next" title="Siguiente"><i data-lucide="chevron-right"></i></button>` : ''}
+          ${isPrincipal && isImg ? `<span class="ap-car-badge"><i data-lucide="star"></i> Principal</span>` : ''}
+        </div>
+        <div class="ap-car-meta">
+          <span class="ap-car-name" title="${a.name}">${a.name}</span>
+          <span class="ap-car-count">${carIndex + 1} / ${list.length}</span>
+        </div>
+        <div class="ap-car-actions">
+          <button class="ap-car-btn" data-act="principal" data-i="${carIndex}" ${(!isImg || isPrincipal) ? 'disabled' : ''} title="Marcar como imagen principal">
+            <i data-lucide="star"></i> ${isPrincipal ? 'Es principal' : 'Hacer principal'}
+          </button>
+          <button class="ap-car-btn" data-act="open" data-i="${carIndex}" title="Ampliar"><i data-lucide="maximize"></i></button>
+          <button class="ap-car-btn ap-car-btn-del" data-act="del" data-i="${carIndex}" title="Quitar"><i data-lucide="trash-2"></i></button>
+        </div>
+        ${many ? `<div class="ap-car-dots">${list.map((_: any, i: number) =>
+          `<button class="ap-car-dot${i === carIndex ? ' on' : ''}${i === principal ? ' principal' : ''}" data-act="goto" data-i="${i}" title="Ir a ${i + 1}"></button>`
+        ).join('')}</div>` : ''}
       </div>`;
-    }).join('');
-    renderIcons();
+    renderIcons(grid);
   }
 
   /** Abre un adjunto (imagen en lightbox, otro tipo se descarga). */
@@ -110,7 +159,7 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
     $('ap-stroke-w-val').textContent = Math.round(st.strokeWidth);
     $('ap-opacity').value = Math.round(st.opacity * 100);
     $('ap-opacity-val').textContent = Math.round(st.opacity * 100);
-    $('ap-label').value = markup ? markup.getLabelText(obj) : '';
+    $('ap-label').value = markup ? markup.getAnnotText(obj) : '';
 
     // Hipervínculo (solo enlaces)
     const isLink = (d.type === 'link');
@@ -141,14 +190,25 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
       if (clearBtn) clearBtn.style.display = lockRfi ? 'none' : '';
     }
 
-    // Nube RFI: sin "texto en figura" ni edición de apariencia (queda roja por defecto)
-    $('ap-text-section').style.display       = isRfiCloud ? 'none' : 'block';
+    // "Texto en la figura": no aplica a la nube RFI ni a la imagen (pin de foto).
+    const isPhotoPin = (d.type === 'photo-pin');
+    $('ap-text-section').style.display       = (isRfiCloud || isPhotoPin) ? 'none' : 'block';
     $('ap-appearance-section').style.display = isRfiCloud ? 'none' : 'block';
 
-    // Adjuntos (solo el pin de cámara)
-    const isPhotoPin = (d.type === 'photo-pin');
+    // Figuras de texto (texto/nota/globo): sin "grosor", con "tamaño de texto".
+    const isTextType = ['text', 'note', 'callout'].includes(d.type);
+    const fStroke = $('ap-field-stroke-w'), fFont = $('ap-field-font-size');
+    if (fStroke) fStroke.style.display = isTextType ? 'none' : '';
+    if (fFont)   fFont.style.display   = isTextType ? '' : 'none';
+    if (isTextType && markup) {
+      const fs = markup.getObjFontSize(obj);
+      $('ap-font-size').value = fs;
+      $('ap-font-size-val').textContent = fs;
+    }
+
+    // Adjuntos (solo el pin de foto)
     $('ap-att-section').style.display = isPhotoPin ? 'block' : 'none';
-    if (isPhotoPin) refreshAttachments();
+    if (isPhotoPin) { resetCarousel(); refreshAttachments(); }
 
     // Solo lectura si es de otro usuario
     setReadonly(!!d.remoto);
@@ -186,5 +246,5 @@ export function createPropertiesPanel(ctx: PropertiesPanelCtx) {
     }
   }
 
-  return { open, close, closeIfOpen, toggle, refreshAttachments, openAttachment, refreshMeta };
+  return { open, close, closeIfOpen, toggle, refreshAttachments, openAttachment, refreshMeta, navAtt, gotoAtt };
 }

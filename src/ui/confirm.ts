@@ -16,6 +16,11 @@ export interface ConfirmOpts {
   onConfirm: () => void;
 }
 
+/** Escapa el texto que se inyecta como HTML (el de cancelar viene por opciones). */
+function escapeHtml(s: string) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export function createConfirm() {
   const $ = (id: string) => document.getElementById(id) as any;
   let pendingCallback: (() => void) | null = null;
@@ -34,7 +39,9 @@ export function createConfirm() {
     const okButton = $('confirm-ok');
     okButton.textContent = opts.okText || 'Aceptar';
     okButton.classList.toggle('confirm-danger', opts.danger !== false);
-    $('confirm-cancel').textContent = opts.cancelText || 'Cancelar';
+    // El de cancelar lleva el icono ✕ a la izquierda, como el resto de modales
+    $('confirm-cancel').innerHTML =
+      `<i data-lucide="x"></i> ${escapeHtml(opts.cancelText || 'Cancelar')}`;
     pendingCallback = opts.onConfirm;
     modal.style.display = "flex";
     renderIcons();

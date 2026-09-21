@@ -55,6 +55,8 @@ import { downscaleImage } from './ui/image-utils';
 import { createCollabSync } from './features/collab-sync';
 import { createPropertiesPanel } from './features/properties-panel';
 import { createCompareRevisions } from './features/compare-revisions';
+import { createRegionSnapshot } from './features/region-snapshot';
+import { createExportPdf } from './features/export-pdf';
 import { createListPicker } from './features/list-picker';
 
 (function () {
@@ -118,7 +120,9 @@ import { createListPicker } from './features/list-picker';
     strokeColor  : $('stroke-color'),
     fillColor    : $('fill-color'),
     fillAlpha    : $('fill-alpha'),
+    fillAlphaVal : $('fill-alpha-val'),
     strokeWidth  : $('stroke-width'),
+    fontSize     : $('font-size'),
     emptyState   : $('empty-state'),
     canvasWrapper: $('canvas-wrapper'),
     drawHint     : $('draw-hint'),
@@ -168,6 +172,26 @@ import { createListPicker } from './features/list-picker';
 
   /* ── Modo embebido (APEX): se abre un plano por parámetro → sin "Abrir PDF" ── */
   let isEmbeddedMode = false;
+  let emptyStateTimer = null;   // espera antes de dar por hecho que no vendrá plano
+
+  /** Muestra/oculta la pantalla vacía (título + "Abrir PDF"). */
+  function showEmptyState(on) {
+    if (ui.emptyState) ui.emptyState.style.display = on ? 'flex' : 'none';
+  }
+
+  /**
+   * Decide si la pantalla vacía debe aparecer. Sólo tiene sentido cuando NO hay
+   * ni se espera un plano: en modo embebido la petición llega por postMessage
+   * (openPDF/init) un instante después de cargar, así que se da un margen antes
+   * de mostrarla y no ver el cartel parpadear encima del plano que va a abrirse.
+   */
+  function scheduleEmptyState() {
+    if (window.parent === window) { showEmptyState(true); return; }   // standalone: hay que abrirlo a mano
+    clearTimeout(emptyStateTimer);
+    emptyStateTimer = setTimeout(() => {
+      if (!isEmbeddedMode && !pdfRenderer.isLoaded) showEmptyState(true);
+    }, 2500);
+  }
 
   /** Muestra/oculta el loader de "cargando plano". */
   function showPlanoLoader(msg) {
@@ -182,6 +206,8 @@ import { createListPicker } from './features/list-picker';
   /** Oculta las opciones de abrir un PDF local (modo embebido en APEX). */
   function disableOpenControls() {
     isEmbeddedMode = true;
+    clearTimeout(emptyStateTimer);   // ya viene un plano: la pantalla vacía sobra
+    showEmptyState(false);
     [ui.btnOpen, ui.btnOpenLarge].forEach(b => { if (b) b.style.display = 'none'; });
   }
 
@@ -210,13 +236,30 @@ import { createListPicker } from './features/list-picker';
       if (!target) return;
       target.data = Object.assign(target.data || {}, { rfiId: id, rfiLabel: label });
       if (activeAnnotationObject === target) $('ap-rfi-name').textContent = label;
-      // Nube RFI: escribir "RFI <número>" dentro de la nube
+      // Nube RFI: colocar el SELLO de RFI (sin inclinación) dentro de la nube
       if (target.data?.type === 'cloud' && markup) {
-        markup.setCloudLabel(target, `RFI ${id}`);
+        markup.setRfiCloudStamp(target, `RFI ${id}`);
+        collabSync.pushLocalLayer();   // sincroniza en vivo + vuelca la página a la sesión
+        // La nube RFI SÍ se guarda automáticamente al vincular (única excepción).
+        // Se persiste SOLO esta nube (+ su sello), sin arrastrar las demás
+        // figuras que el usuario aún no ha guardado con el botón Guardar.
+        const objs = markup.getObjectsJSONByCloudId(target.data.cloudId);
+        collabSync.saveObjectsNow(currentPage, objs).then(ok => {
+          showSaveToast(ok ? 'success' : 'error',
+            ok ? 'Nube RFI guardada' : 'No se pudo guardar la nube RFI', 3000);
+        });
+      } else {
+        markup && markup._snapshot();
+        markup && markup._notifyLocalChange && markup._notifyLocalChange();
       }
-      markup && markup._snapshot();
-      markup && markup._notifyLocalChange && markup._notifyLocalChange();
       openRfiDrawer(id);   // al elegir, abre el drawer
+    },
+    // Se cerró el selector SIN elegir → si era una nube RFI sin vincular, eliminarla
+    onCancel: (target) => {
+      if (target && target.data?.type === 'cloud' && target.data?.isRfi
+          && (target.data?.rfiId == null || String(target.data.rfiId).trim() === '')) {
+        markup && markup.removeCloud(target);
+      }
     },
   });
 
@@ -234,10 +277,25 @@ import { createListPicker } from './features/list-picker';
     showHint('Abriendo RFI…');
   }
 
-  /** Doble clic en el sello RFI → abrir el drawer con su RFI vinculado (si lo tiene). */
+  /** Abre la MISMA página de APEX pero para CREAR un RFI: va sin rfiId, sólo con
+      el contexto del plano (el drawer decide que es alta al no recibir el id). */
+  function openRfiCreate() {
+    const msg = {
+      action  : 'openRfi',
+      apexPage: APEX_RFI_PAGE,         // página del drawer (87490)
+      mode    : 'create',              // sin rfiId → alta de RFI
+      repoId  : session.docId,         // id_en_repositorio del plano (contexto)
+      page    : currentPage,
+    };
+    try { if (window.parent !== window) window.parent.postMessage(msg, APEX_ORIGIN); } catch (e) {}
+    showHint('Abriendo creación de RFI…');
+  }
+
+  /** Doble clic en el sello RFI o en la nube RFI → abrir el drawer del RFI vinculado. */
   function onRfiStampDblClick(data) {
     const d = data || {};
-    if (String(d.label || '').toUpperCase() !== 'RFI') return;   // solo el sello RFI
+    const esRfi = String(d.label || '').toUpperCase() === 'RFI' || (d.type === 'cloud' && d.isRfi);
+    if (!esRfi) return;
     if (d.rfiId) openRfiDrawer(d.rfiId);
     else showHint('Selecciona el RFI en el panel de propiedades');
   }
@@ -253,24 +311,31 @@ import { createListPicker } from './features/list-picker';
     // Reset active
     document.querySelectorAll('.tb-tool').forEach(b => b.classList.remove('tb-btn-active'));
     document.querySelectorAll('.tb-tool-group-btn').forEach(b => b.classList.remove('tb-btn-active'));
+    $('btn-tool-cloud-rfi')?.classList.remove('tb-btn-active');   // botón Nube RFI (no es .tb-tool)
+    document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item')   // sus dos modos tampoco
+      .forEach(b => b.classList.remove('tb-btn-active'));
 
-    // Marcar el botón directo (si existe en la barra principal)
+    // Marcar el/los botones directos con esta herramienta (barra o items de menú)
     document.querySelectorAll(`.tb-tool[data-tool="${tool}"]`)
       .forEach(b => b.classList.add('tb-btn-active'));
 
-    // Actualizar label del grupo dropdown
-    if (ANNOT_TOOLS[tool]) {
-      const info = ANNOT_TOOLS[tool];
-      ui.btnAnnotGroup.querySelector('.tool-gicon').innerHTML = `<i data-lucide="${info.lc}"></i>`;
-      ui.btnAnnotGroup.querySelector('.tool-gname').textContent = info.name;
-      ui.btnAnnotGroup.classList.add('tb-btn-active');
-      renderIcons();
-    } else if (MEASURE_TOOLS[tool]) {
-      const info = MEASURE_TOOLS[tool];
-      ui.btnMeasureGroup.querySelector('.tool-gicon').innerHTML = `<i data-lucide="${info.lc}"></i>`;
-      ui.btnMeasureGroup.querySelector('.tool-gname').textContent = info.name;
-      ui.btnMeasureGroup.classList.add('tb-btn-active');
-      renderIcons();
+    // Si la herramienta vive dentro de un grupo (submenú del riel), reflejarla en
+    // el botón del grupo: icono + nombre + estado activo. Genérico para cualquier grupo.
+    const info = ANNOT_TOOLS[tool] || MEASURE_TOOLS[tool];
+    if (info) {
+      document.querySelectorAll(`.tb-dropdown .tb-tool[data-tool="${tool}"]`).forEach(item => {
+        const groupBtn = item.closest('.tb-dropdown-wrap')?.querySelector('.rail-group');
+        if (!groupBtn) return;
+        const gi = groupBtn.querySelector('.tool-gicon');
+        const gn = groupBtn.querySelector('.tool-gname');
+        if (gi) gi.innerHTML = `<i data-lucide="${info.lc}"></i>`;
+        if (gn) gn.textContent = info.name;
+        // Recordar la herramienta elegida: al hacer clic en el cuerpo del grupo
+        // (no en el caret) se vuelve a activar esta misma.
+        (groupBtn as HTMLElement).dataset.tool = tool;
+        groupBtn.classList.add('tb-btn-active');
+        renderIcons(groupBtn as HTMLElement);
+      });
     }
 
     showHint(TOOL_HINTS[tool] || '', true);
@@ -321,6 +386,13 @@ import { createListPicker } from './features/list-picker';
     markup.onShowImage   = src  => { $('att-lightbox-img').src = src; $('att-lightbox').style.display = 'flex'; };
     // Doble clic en un sello RFI → avisar a APEX para abrir su drawer de RFIs
     markup.onStampDblClick = (data) => onRfiStampDblClick(data);
+    // Hipervínculo: al colocar el enlace, abrir de una vez el selector del plano
+    // destino (igual que la nube RFI). Se difiere un frame para que primero
+    // termine la colocación y el auto-select de la figura.
+    markup.onLinkCreated = (obj) => {
+      linkPickTarget = obj;      // también para el flujo por postMessage (APEX)
+      requestAnimationFrame(() => planoPicker.open(obj));
+    };
     // Nube RFI: al colocar la nube en modo RFI, abrir la modal para vincular el RFI.
     // Se difiere al siguiente frame para que primero termine la colocación y el
     // auto-select de la nube; así la modal abre limpia y con foco en el buscador.
@@ -328,7 +400,13 @@ import { createListPicker } from './features/list-picker';
       if (!pendingRfiCloud) return;
       pendingRfiCloud = false;
       obj.data = Object.assign(obj.data || {}, { isRfi: true });
-      obj.set({ stroke: RFI_CLOUD_COLOR });   // color rojo fijo por defecto
+      obj.set({
+        stroke: RFI_CLOUD_COLOR,                 // color rojo fijo por defecto
+        lockScalingX: true, lockScalingY: true,  // tamaño protegido (no redimensionable)
+        lockMovementX: true, lockMovementY: true, // posición fija (no se puede mover)
+        lockRotation: true,
+        hasControls: false,                      // sin manijas de escala/rotación
+      });
       markup.canvas.renderAll();
       requestAnimationFrame(() => rfiPicker.open(obj));
     };
@@ -393,7 +471,7 @@ import { createListPicker } from './features/list-picker';
       rotation            = 0;             // cada documento arranca sin rotar
       session.rotation    = 0;             // (se restaura desde el servidor si existe)
       collabSync.reset();
-      ui.emptyState.style.display    = 'none';
+      showEmptyState(false);
       ui.canvasWrapper.style.display = 'flex';
       compare.close();   // la Rev B anterior ya no corresponde al nuevo documento
       initMarkup();
@@ -402,6 +480,7 @@ import { createListPicker } from './features/list-picker';
       setStatus('');
     } catch (e) {
       setStatus('Error: ' + e.message);
+      if (!pdfRenderer.isLoaded) showEmptyState(true);   // sin plano → volver a la pantalla vacía
       alert('No se pudo cargar el PDF:\n' + e.message);
     }
   }
@@ -426,7 +505,7 @@ import { createListPicker } from './features/list-picker';
       rotation            = 0;             // cada documento arranca sin rotar
       session.rotation    = 0;             // (se restaura desde el servidor si existe)
       collabSync.reset();
-      ui.emptyState.style.display    = 'none';
+      showEmptyState(false);
       ui.canvasWrapper.style.display = 'flex';
       compare.close();
       initMarkup();
@@ -439,6 +518,7 @@ import { createListPicker } from './features/list-picker';
       setStatus('');
     } catch (e) {
       setStatus('Error: ' + e.message);
+      if (!pdfRenderer.isLoaded) showEmptyState(true);   // sin plano → volver a la pantalla vacía
       alert('No se pudo cargar el PDF desde la URL:\n' + e.message);
     } finally {
       hidePlanoLoader();
@@ -450,6 +530,7 @@ import { createListPicker } from './features/list-picker';
      ════════════════════════════════════════════════════════════════════ */
   async function goToPage(n) {
     if (!pdfRenderer.isLoaded || n<1 || n>totalPages) return;
+    regionSnapshot.cancel();   // un recorte a medias no sobrevive al cambio de página
     if (markup) session.pages[currentPage] = markup.getMarkupJSON();
     currentPage = n;
     setStatus('Renderizando…');
@@ -481,6 +562,18 @@ import { createListPicker } from './features/list-picker';
     setStatus('');
   }
 
+  /* Captura de pantalla por selección → feature ./features/region-snapshot.
+     La usan el botón de la barra superior y el menú de descarga de la comparación. */
+  const regionSnapshot = createRegionSnapshot({
+    getMarkup      : () => markup,
+    downloadImage  : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
+    defaultName    : () => `${(session.docName || 'plano').replace(/\.pdf$/i, '')}_captura_p${currentPage}`,
+    onActiveChange : (on) => {
+      const b = $('btn-snapshot');
+      if (b) b.classList.toggle('tb-btn-active', on);
+    },
+  });
+
   /* Comparación de revisiones → feature ./features/compare-revisions */
   const compare = createCompareRevisions({
     getMarkup        : () => markup,
@@ -490,6 +583,38 @@ import { createListPicker } from './features/list-picker';
     pdfRenderer,
     setStatus        : (m) => setStatus(m),
     updateScaleBadge : () => updateScaleBadge(),
+    onPickRevision   : () => comparePicker.open({}),   // elegir la revisión desde la BD (target placeholder)
+    closeRevisionPicker: () => comparePicker.dismiss(), // al comparar con un PDF del equipo
+    showHint         : (m, p) => showHint(m, p),
+    downloadImage    : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
+    startRegionSnapshot : (baseName) => regionSnapshot.start(baseName),
+    cancelRegionSnapshot: () => regionSnapshot.cancel(),
+  });
+
+  /* Selector de revisión a comparar — mismo listado/API que los hipervínculos (BD). */
+  const comparePicker = createListPicker({
+    ids: { modal: 'modal-compare', search: 'compare-search', list: 'compare-list', close: 'btn-compare-pick-close' },
+    loadingText: 'Cargando planos…',
+    fetchItems: async () => {
+      const headers: any = {};
+      const docId = session.docId;
+      if (docId != null && String(docId).trim() !== '') headers.id = String(docId).trim();
+      if (_codigoProyecto != null && String(_codigoProyecto).trim() !== '')
+        headers.codigo_proyecto = String(_codigoProyecto).trim();
+      const res = await fetch(API_PLANOS, { credentials: 'include', headers });
+      const items = res.ok ? ((await res.json()).items || []) : [];
+      return items.filter((p: any) => p.id_en_repositorio != null);
+    },
+    toRow: (p) => ({
+      value: String(p.id_en_repositorio),
+      label: String(p.display || p.nombre_archivo || `Plano ${p.id_en_repositorio}`),
+    }),
+    onPick: (_t, repo, _label, item) => {
+      const nombre = item?.nombre_archivo || `Plano ${repo}`;
+      const headers: Record<string, string> = { id: String(repo) };
+      if (nombre) headers.nombre = encodeURIComponent(String(nombre));
+      compare.loadRevisionUrl(API_PDF, headers, nombre);
+    },
   });
 
   /* ════════════════════════════════════════════════════════════════════
@@ -693,14 +818,25 @@ import { createListPicker } from './features/list-picker';
     }
   }
 
+  /** La escala es global: al calibrar se difunde y se AUTOGUARDA en el servidor
+      (sin arrastrar las figuras que aún no se han guardado con «Guardar»). */
+  function persistScaleAuto() {
+    collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
+    if (session.docId == null) return;          // archivo local: sin servidor donde guardar
+    collabSync.saveScaleNow().then(ok => {
+      showSaveToast(ok ? 'success' : 'error',
+        ok ? 'Escala guardada' : 'No se pudo guardar la escala', 2500);
+    });
+  }
+
   function applyCalibration() {
     if (calibrationMode === 'direct') {
       const px  = parseFloat(ui.calPxDirect.value);
       const val = parseFloat(ui.calValDirect.value);
       if (!px||px<=0||!val||val<=0) { alert('Ingresa valores mayores a 0'); return; }
       scaleManager.calibrate(px, val, ui.calUnitDirect.value);
-      session.scale = buildScaleObj();     // queda listo para guardar (botón Guardar)
-      collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
+      session.scale = buildScaleObj();
+      persistScaleAuto();                  // difunde + autoguarda la escala
       closeCalibrate();
       updateScaleBadge();
       setStatus(`Escala: 1 ${ui.calUnitDirect.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
@@ -710,8 +846,8 @@ import { createListPicker } from './features/list-picker';
       if (!val||val<=0) { alert('Ingresa un valor mayor a 0'); return; }
       const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
       scaleManager.calibrate(px, val, ui.calUnit.value);
-      session.scale = buildScaleObj();     // queda listo para guardar (botón Guardar)
-      collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
+      session.scale = buildScaleObj();
+      persistScaleAuto();                  // difunde + autoguarda la escala
       closeCalibrate();
       updateScaleBadge();
       setStatus(`Escala: 1 ${ui.calUnit.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
@@ -849,7 +985,9 @@ import { createListPicker } from './features/list-picker';
   function applyCollabPermission() {
     ['btn-save-marks', 'btn-download-doc'].forEach(id => {
       const b = $(id);
-      if (b) b.style.display = _canCollaborate ? '' : 'none';
+      // El de Descargar vive dentro de un submenú: se oculta el envoltorio entero
+      const box = b && (b.closest('.tb-dropdown-wrap') || b);
+      if (box) box.style.display = _canCollaborate ? '' : 'none';
     });
   }
 
@@ -907,11 +1045,12 @@ import { createListPicker } from './features/list-picker';
       return `<div class="author-row${isCurrent ? ' author-current' : ''}${isOnline ? ' author-online' : ''}${hidden ? ' author-hidden' : ''}" data-author="${name}">
         <span class="author-dot" style="background:${color}"></span>
         <span class="author-name">${name}${isCurrent ? ' (tú)' : ''}</span>
-        ${isOnline ? '<span class="author-presence-badge">● en línea</span>' : ''}
+        ${isOnline ? '<span class="author-presence-badge"><span class="live-dot"></span> en línea</span>' : ''}
         ${count ? `<span class="author-count">${count}</span>` : ''}
-        <button class="author-toggle" data-author="${name}" title="${hidden ? 'Mostrar anotaciones' : 'Ocultar anotaciones'}">👁</button>
+        <button class="author-toggle" data-author="${name}" title="${hidden ? 'Mostrar anotaciones' : 'Ocultar anotaciones'}"><i data-lucide="${hidden ? 'eye-off' : 'eye'}"></i></button>
       </div>`;
     }).join('');
+    renderIcons(ui.authorsList);
 
     // Botón ojo: toggle visibilidad de anotaciones del autor (estado persistente
     // en el markup, así sobrevive a reconstrucciones de la lista).
@@ -924,6 +1063,8 @@ import { createListPicker } from './features/list-picker';
         markup.filterByAutor(name, !nowHidden);
         btn.closest('.author-row').classList.toggle('author-hidden', nowHidden);
         btn.title = nowHidden ? 'Mostrar anotaciones' : 'Ocultar anotaciones';
+        btn.innerHTML = `<i data-lucide="${nowHidden ? 'eye-off' : 'eye'}"></i>`;
+        renderIcons(btn as HTMLElement);
       });
     });
   }
@@ -952,8 +1093,9 @@ import { createListPicker } from './features/list-picker';
         `<span class="tip-dot" style="background:${color}"></span>` +
         `<span class="tip-autor">${autor}</span>` +
         (fecha       ? `<span class="tip-fecha">${fecha}</span>` : '') +
-        (tipoInfo    ? `<span class="tip-type">${tipoInfo.icon} ${tipoInfo.label}</span>` : '') +
-        (data.prioridad ? `<span class="tip-fecha ${prioClass}">▪ ${data.prioridad}</span>` : '');
+        (tipoInfo    ? `<span class="tip-type"><i data-lucide="${tipoInfo.icon}"></i> ${tipoInfo.label}</span>` : '') +
+        (data.prioridad ? `<span class="tip-fecha ${prioClass}"><i data-lucide="flag"></i> ${data.prioridad}</span>` : '');
+      renderIcons(tip);
 
       // Posicionar al lado del cursor
       tip.style.left    = ((evt?.clientX || 0) + 16) + 'px';
@@ -987,7 +1129,12 @@ import { createListPicker } from './features/list-picker';
   ui.fileInput && ui.fileInput.addEventListener('change', e => { if(e.target.files[0]) openPDF(e.target.files[0]); e.target.value=''; });
 
   // 3. Descargar documento (PDF + marcas si están visibles)
-  $('btn-download-doc') && $('btn-download-doc').addEventListener('click', downloadDocument);
+  // El botón abre el submenú (lo gestiona dropdowns.ts); descargan sus dos ítems
+  $('btn-dl-pdf-marks')?.addEventListener('click', () => downloadDocument(true));
+  $('btn-dl-pdf-clean')?.addEventListener('click', () => downloadDocument(false));
+
+  // 3a. Cerrar visor → avisa al padre (APEX) para que cierre el iframe/diálogo
+  $('btn-close-viewer') && $('btn-close-viewer').addEventListener('click', closeViewer);
 
   // 3b. Guardar marcas (persiste la capa propia en el servidor)
   $('btn-save-marks') && $('btn-save-marks').addEventListener('click', saveMarks);
@@ -1004,12 +1151,47 @@ import { createListPicker } from './features/list-picker';
     btn.addEventListener('click', () => activateTool(btn.dataset.tool));
   });
 
-  // 6b. Nube RFI: activa la nube y marca que, al colocarla, se abra la modal de RFI.
+  // 6a. Botón de grupo del riel: clic en el cuerpo → activa la herramienta actual
+  // del grupo; el caret (>) despliega el resto de opciones (lo abre dropdowns.ts).
+  document.querySelectorAll('.rail-group').forEach(btn => {
+    btn.addEventListener('click', e => {
+      if (e.target.closest('.tb-caret')) return;   // el caret abre el submenú
+      const tool = btn.dataset.tool;
+      if (tool) activateTool(tool);
+    });
+  });
+
+  // 6b. Nube RFI: activa la herramienta de nube y marca que, al colocarla, se abra
+  // la modal de RFI. Dos modos, igual que la nube normal:
+  //   'cloud'      → dos puntos (arrastrar de esquina a esquina)
+  //   'cloud-poly' → múltiples puntos (clic en cada vértice, doble clic cierra)
+  // Ambos caminos llaman a markup.onCloudCreated, que es donde se vincula el RFI.
   // OJO: activateTool() resetea el flag, por eso se activa DESPUÉS de llamarla.
-  $('btn-tool-cloud-rfi') && $('btn-tool-cloud-rfi').addEventListener('click', () => {
-    activateTool('cloud');
+  const RFI_CLOUD_HINTS = {
+    'cloud'     : 'Arrastra para dibujar la nube RFI · luego elige el RFI a vincular',
+    'cloud-poly': 'Clic en cada punto de la nube RFI · doble clic para cerrar · luego elige el RFI',
+  };
+  function activateRfiCloud(tool) {
+    activateTool(tool);
     pendingRfiCloud = true;
-    showHint('Dibuja la nube y elige el RFI a vincular', true);
+    // El resaltado va en el botón Nube RFI, no en la herramienta de nube normal
+    document.querySelectorAll(`.tb-tool[data-tool="${tool}"]`).forEach(b => b.classList.remove('tb-btn-active'));
+    $('btn-cloud-group')?.classList.remove('tb-btn-active');   // grupo Nube: no debe quedar activo
+    const rfiBtn = $('btn-tool-cloud-rfi');
+    if (rfiBtn) {
+      rfiBtn.classList.add('tb-btn-active');
+      rfiBtn.dataset.rfiTool = tool;   // el cuerpo del botón repite el último modo elegido
+    }
+    document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item')
+      .forEach(it => it.classList.toggle('tb-btn-active', it.dataset.rfiTool === tool));
+    showHint(RFI_CLOUD_HINTS[tool] || '', true);
+  }
+  $('btn-tool-cloud-rfi')?.addEventListener('click', (e) => {
+    if (e.target.closest('.tb-caret')) return;   // el caret abre el submenú
+    activateRfiCloud($('btn-tool-cloud-rfi').dataset.rfiTool || 'cloud');
+  });
+  document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item').forEach(item => {
+    item.addEventListener('click', () => activateRfiCloud(item.dataset.rfiTool));
   });
 
   // 7. Estilos
@@ -1017,20 +1199,32 @@ import { createListPicker } from './features/list-picker';
   ui.fillColor  .addEventListener('input', ()  => syncFill());
   ui.fillAlpha  .addEventListener('input', ()  => syncFill());
   ui.strokeWidth.addEventListener('change', e  => markup&&markup.setStrokeWidth(e.target.value));
+  ui.fontSize && ui.fontSize.addEventListener('change', e => markup&&markup.setFontSize(e.target.value));
 
   function syncFill() {
     const hex=ui.fillColor.value, a=parseInt(ui.fillAlpha.value,10)/100;
     const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
     markup&&markup.setFillColor(`rgba(${r},${g},${b},${a.toFixed(2)})`);
+    if (ui.fillAlphaVal) ui.fillAlphaVal.textContent = ui.fillAlpha.value + '%';   // eco del valor
   }
 
-  // 8. Toggle markup
-  ui.btnToggle.addEventListener('click', () => {
+  // 8. Toggle markup (ítem "Mostrar / ocultar todas" dentro del menú de Marcas)
+  ui.btnToggle && ui.btnToggle.addEventListener('click', () => {
     if (!markup) return;
     markupVisible=!markupVisible;
     markup.setMarkupVisible(markupVisible);
-    ui.btnToggle.classList.toggle('tb-btn-active', markupVisible);
+    ui.btnToggle.classList.toggle('tb-btn-active', !markupVisible);
+    // Refleja el estado en el ícono del ítem (ojo / ojo tachado)
+    ui.btnToggle.innerHTML = markupVisible
+      ? '<i data-lucide="eye"></i> Mostrar / ocultar todas las marcas'
+      : '<i data-lucide="eye-off"></i> Marcas ocultas — mostrar';
+    renderIcons(ui.btnToggle);
+    // El botón del menú (layers) indica si hay algo oculto
+    $('btn-markup-menu')?.classList.toggle('tb-btn-active', markupVisible);
   });
+
+  // Al abrir el menú de Marcas, refrescar la lista de colaboradores
+  $('btn-markup-menu') && $('btn-markup-menu').addEventListener('click', () => buildUsersPanel());
 
   // 9. Undo / Redo
   ui.btnUndo.addEventListener('click', () => markup&&markup.undo());
@@ -1083,6 +1277,7 @@ import { createListPicker } from './features/list-picker';
       pixeles        : scaleManager.pxDistance,  // píxeles medidos en el plano
       distancia_real : scaleManager.realValue,   // distancia real ingresada
       unidad         : scaleManager.unit,        // unidad de medida (m, cm, …)
+      unit           : scaleManager.unit,        // alias inglés → lo lee el handler ORDS ($.scale.unit)
       ts             : Date.now(),               // hora de calibración → gana la más reciente
     };
   }
@@ -1152,24 +1347,13 @@ import { createListPicker } from './features/list-picker';
     else    showSaveToast('error',   'No se pudo guardar. Reintenta.', 3000);
   }
 
-  function downloadDocument() {
-    if (!markup) return;
-    if (!_canCollaborate) { showHint('No tienes permiso para descargar'); return; }
-    closeAllDropdowns();
-    let dataUrl;
-    try {
-      dataUrl = markup.exportDocument(3);      // respeta la visibilidad de las marcas
-    } catch (err) {
-      console.error('[SAF] exportDocument:', err);
-      showHint('No se pudo generar la imagen del documento');
-      return;
-    }
-    const filename = `${(session.docName || 'documento').replace(/\.pdf$/i,'')}_p${currentPage}.png`;
-
+  /** Dispara la descarga de un PNG: vía APEX (postMessage) si está embebido, o directa. */
+  function triggerFileDownload(dataUrl, filename) {
+    if (!dataUrl) return;
     if (window.parent !== window) {
       // Embebido en APEX (iframe sandbox): el padre dispara la descarga
       try { window.parent.postMessage({ action: 'downloadDoc', filename, dataUrl }, APEX_ORIGIN); } catch (e) {}
-      showHint('Descargando documento…');
+      showHint('Descargando…');
     } else {
       // Standalone: descarga directa
       const a = document.createElement('a');
@@ -1178,11 +1362,76 @@ import { createListPicker } from './features/list-picker';
     }
   }
 
+  /* Descarga del documento en PDF → feature ./features/export-pdf */
+  const exportPdf = createExportPdf({
+    pdfRenderer,
+    getMarkup     : () => markup,
+    getSession    : () => session,
+    getCurrentPage: () => currentPage,
+    getTotalPages : () => totalPages,
+    goToPage      : (n) => goToPage(n),
+    downloadFile  : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
+    setStatus     : (m) => setStatus(m),
+  });
+
+  /** Descarga el documento en PDF, con las marcas incrustadas o el original limpio. */
+  async function downloadDocument(withMarkup) {
+    if (!markup || !pdfRenderer.isLoaded) return;
+    if (!_canCollaborate) { showHint('No tienes permiso para descargar'); return; }
+    closeAllDropdowns();
+    try {
+      setStatus('Generando PDF…');
+      if (withMarkup) await exportPdf.downloadWithMarkup();
+      else            await exportPdf.downloadOriginal();
+      setStatus('');
+    } catch (err) {
+      console.error('[SAF] descarga PDF:', err);
+      setStatus('');
+      showHint('No se pudo generar el PDF');
+    }
+  }
+
+  /** Cierra el visor: avisa al padre (APEX) para que cierre el iframe/diálogo. */
+  function closeViewer() {
+    closeAllDropdowns();
+    // Siempre pedir confirmación antes de cerrar (evita cierres accidentales).
+    confirmDialog.open({
+      title: '¿Cerrar el visor?',
+      message: 'Se cerrará el visor de planos. Asegúrate de haber guardado tus cambios.',
+      okText: 'Cerrar',
+      cancelText: 'Cancelar',
+      danger: true,
+      onConfirm: () => {
+        // Avisar al contenedor (APEX u otro padre) para que cierre el iframe/diálogo.
+        // OJO: se envía con targetOrigin '*' — dentro del iframe NO conocemos el origen
+        // real del padre, y APEX_ORIGIN (que por defecto es el propio origen del visor)
+        // haría que el navegador descartara el mensaje. Sin datos sensibles → '*' es seguro.
+        const msg = { source: 'visor-planos', action: 'close' };
+        try { if (window.parent && window.parent !== window) window.parent.postMessage(msg, '*'); } catch (e) {}
+        try { if (window.top && window.top !== window) window.top.postMessage(msg, '*'); } catch (e) {}
+        // Además intentar cerrar la ventana directamente (si la abrió window.open).
+        try { window.close(); } catch (e) {}
+        try { window.open('', '_self'); window.close(); } catch (e) {}
+      },
+    });
+  }
+
   // 13. Panel área
   $('btn-area-close').addEventListener('click', () => { ui.areaPanel.style.display='none'; });
 
   // 13b. Comparación de revisiones (feature ./features/compare-revisions)
   compare.init();
+  comparePicker.init();
+
+  // 13c. Captura de pantalla por selección (feature ./features/region-snapshot)
+  regionSnapshot.init();
+  $('btn-snapshot')?.addEventListener('click', () => {
+    if (!markup || !pdfRenderer.isLoaded) return;
+    closeAllDropdowns();
+    // Segundo clic mientras se está recortando → cancelar
+    if (regionSnapshot.isActive()) { regionSnapshot.cancel(); return; }
+    regionSnapshot.start();
+  });
 
   // 14. Sellos y Etiquetas
   // .stamp-opt  → rubber stamp clásico (inclinado)
@@ -1243,7 +1492,7 @@ import { createListPicker } from './features/list-picker';
 
   // ── Apariencia + etiqueta de la figura (edición en vivo) ──────────────
   $('ap-label') && $('ap-label').addEventListener('input', () => {
-    if (markup && activeAnnotationObject) markup.setLabelText(activeAnnotationObject, $('ap-label').value);
+    if (markup && activeAnnotationObject) markup.setAnnotText(activeAnnotationObject, $('ap-label').value);
   });
   $('ap-stroke') && $('ap-stroke').addEventListener('input', () => {
     if (markup && activeAnnotationObject) markup.setObjProp(activeAnnotationObject, 'stroke', $('ap-stroke').value);
@@ -1258,6 +1507,12 @@ import { createListPicker } from './features/list-picker';
     const w = parseInt($('ap-stroke-w').value, 10);
     $('ap-stroke-w-val').textContent = w;
     markup.setObjProp(activeAnnotationObject, 'strokeWidth', w);
+  });
+  $('ap-font-size') && $('ap-font-size').addEventListener('input', () => {
+    if (!markup || !activeAnnotationObject) return;
+    const px = parseInt($('ap-font-size').value, 10);
+    $('ap-font-size-val').textContent = px;
+    markup.setObjFontSize(activeAnnotationObject, px);
   });
   $('ap-opacity') && $('ap-opacity').addEventListener('input', () => {
     if (!markup || !activeAnnotationObject) return;
@@ -1310,6 +1565,15 @@ import { createListPicker } from './features/list-picker';
         markup && markup._notifyLocalChange && markup._notifyLocalChange();
       },
     });
+  });
+
+  // "Crear" (primera línea del selector de RFI): abre la página de APEX sin id.
+  // Se cierra con dismiss() para NO disparar onCancel: la nube RFI en curso se
+  // conserva y se puede vincular después con "Elegir RFI…" en el panel.
+  $('btn-rfi-create')?.addEventListener('click', () => {
+    rfiPicker.dismiss();
+    rfiPicker.refresh();   // el RFI nuevo debe aparecer la próxima vez que se abra
+    openRfiCreate();
   });
 
   // Eventos de los modales selector (planos + RFIs) y de confirmación
@@ -1371,27 +1635,51 @@ import { createListPicker } from './features/list-picker';
 
   $('ap-att-grid') && $('ap-att-grid').addEventListener('click', e => {
     const btn = e.target.closest('[data-act]');
-    if (!btn || !activeAnnotationObject || !activeAnnotationObject.data?.adjuntos) return;
+    if (!btn || !activeAnnotationObject) return;
+    const act = btn.dataset.act;
+    // Navegación del carrusel
+    if (act === 'prev') { propsPanel.navAtt(-1); return; }
+    if (act === 'next') { propsPanel.navAtt(1);  return; }
+    if (act === 'goto') { propsPanel.gotoAtt(parseInt(btn.dataset.i, 10)); return; }
+
+    const list = activeAnnotationObject.data?.adjuntos || [];
     const i = parseInt(btn.dataset.i, 10);
-    const a = activeAnnotationObject.data.adjuntos[i];
+    const a = list[i];
     if (!a) return;
-    if (btn.dataset.act === 'del') {
+
+    // Marcar como imagen principal (la que se muestra en el plano)
+    if (act === 'principal') {
+      activeAnnotationObject.data.principal = i;
+      propsPanel.refreshAttachments();
+      markup && markup.refreshThumb(activeAnnotationObject);
+      markup && markup._snapshot();
+      markup && markup._notifyLocalChange && markup._notifyLocalChange();
+      return;
+    }
+
+    if (act === 'del') {
       const obj = activeAnnotationObject;   // fijar la figura aunque cambie la selección
       confirmDialog.open({
         title: 'Quitar adjunto', message: `¿Quitar "${a.name}" de esta figura?`,
         okText: 'Quitar', danger: true,
         onConfirm: () => {
           obj.data.adjuntos.splice(i, 1);
+          // Reajustar el índice de la imagen principal tras el borrado
+          let p = (typeof obj.data.principal === 'number') ? obj.data.principal : 0;
+          if (i < p) p--; else if (i === p) p = 0;
+          obj.data.principal = Math.max(0, Math.min(p, obj.data.adjuntos.length - 1));
           propsPanel.refreshAttachments();
           markup && markup.refreshThumb(obj);
           markup && markup._snapshot();
           markup && markup._notifyLocalChange && markup._notifyLocalChange();
         },
       });
-    } else {
-      propsPanel.openAttachment(a);
+      return;
     }
+    // 'open' → ampliar en el lightbox
+    propsPanel.openAttachment(a);
   });
+
   $('att-lightbox') && $('att-lightbox').addEventListener('click', () => {
     $('att-lightbox').style.display = 'none';
   });
@@ -1419,11 +1707,8 @@ import { createListPicker } from './features/list-picker';
   $('annot-panel') && $('annot-panel').addEventListener('keydown', e => e.stopPropagation());
 
   // 16. Usuarios ─────────────────────────────────────────────────────────
-  // El usuario lo fija APEX (usuario_conectado / postMessage); ya NO se puede
-  // cambiar manualmente. El dropdown solo muestra quién está colaborando.
-  if ($('btn-users')) {
-    $('btn-users').addEventListener('click', () => buildUsersPanel());
-  }
+  // (El dropdown de "usuario conectado" se eliminó; la lista de colaboradores y
+  //  la visibilidad por autor viven ahora dentro del menú de Marcas.)
 
   // PostMessage desde Oracle APEX
   // Soporta:
@@ -1556,6 +1841,10 @@ import { createListPicker } from './features/list-picker';
       disableOpenControls();
       if (repoId)   openPDFFromRepo(repoId, params.get('nombre'));
       else          openPDFFromUrl(pdfParam, params.get('docId'), params.get('nombre'));
+    } else {
+      // Nadie pidió un plano por la URL: mostrar la pantalla vacía (embebido,
+      // se espera un momento por si APEX lo pide por postMessage)
+      scheduleEmptyState();
     }
   })();
 
@@ -1579,8 +1868,8 @@ import { createListPicker } from './features/list-picker';
       return;
     }
 
-    const tools={v:'select',h:'pan',t:'text',d:'freehand',e:'eraser',
-                  r:'rect',o:'ellipse',a:'arrow',n:'note',c:'callout'};
+    // Solo navegación/utilidad; las FIGURAS ya no tienen atajo de teclado
+    const tools={v:'select',h:'pan',e:'eraser'};
     if (tools[e.key.toLowerCase()]) { activateTool(tools[e.key.toLowerCase()]); return; }
 
     switch (e.key) {
@@ -1593,7 +1882,7 @@ import { createListPicker } from './features/list-picker';
   function enableDocs(on) {
     [ui.btnRotateLeft,ui.btnRotateRight,ui.btnZoomIn,ui.btnZoomOut,ui.btnFit,
      ui.btnCalibrate,ui.btnClear,
-     $('btn-save-marks'), $('btn-download-doc'), $('btn-compare')]
+     $('btn-save-marks'), $('btn-download-doc'), $('btn-compare'), $('btn-snapshot')]
      .forEach(el => { if(el) el.disabled=!on; });
     ui.btnUndo.disabled=true; ui.btnRedo.disabled=true;
   }
@@ -1605,7 +1894,9 @@ import { createListPicker } from './features/list-picker';
     const el = $('scale-info');
     if (!el) return;
     if (scaleManager.isCalibrated()) {
-      el.textContent = `📐 1 ${scaleManager.unit} = ${scaleManager.pxPerUnit.toFixed(1)} px`;
+      el.innerHTML = '<i data-lucide="ruler"></i> ';
+      el.appendChild(document.createTextNode(`1 ${scaleManager.unit} = ${scaleManager.pxPerUnit.toFixed(1)} px`));
+      renderIcons(el);
       el.style.display = '';
     } else {
       el.style.display = 'none';
@@ -1617,7 +1908,20 @@ import { createListPicker } from './features/list-picker';
     const el=ui.drawHint;
     clearTimeout(hintTimer);
     if (!msg) { el.style.display='none'; return; }
-    el.textContent=msg; el.style.display='block';
+    // Icono opcional con la sintaxis  [[icon:nombre]] texto…  El texto SIEMPRE se
+    // inserta como nodo de texto (nunca como HTML) → seguro con datos de usuario.
+    el.innerHTML = '';
+    let text = msg;
+    const m = /^\s*\[\[icon:([a-z0-9-]+)\]\]\s*/i.exec(msg);
+    if (m) {
+      const ic = document.createElement('i');
+      ic.setAttribute('data-lucide', m[1]);
+      el.appendChild(ic);
+      text = msg.slice(m[0].length);
+    }
+    el.appendChild(document.createTextNode(text));
+    renderIcons(el);
+    el.style.display='block';
     // Las leyendas de acción se auto-ocultan a los 5s; los hints de herramienta persisten.
     if (!persist) hintTimer=setTimeout(()=>el.style.display="none", HINT_AUTO_HIDE_MS);
   }

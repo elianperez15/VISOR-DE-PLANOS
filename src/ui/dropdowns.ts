@@ -45,8 +45,12 @@ export function initDropdowns(): void {
     const btn = wrap.querySelector('.tb-dropdown-btn') as HTMLElement | null;
     const dd  = wrap.querySelector('.tb-dropdown') as HTMLElement | null;
     if (!btn || !dd) return;
+    const isGroup = btn.classList.contains('rail-group');
     btn.addEventListener('click', e => {
       e.stopPropagation();
+      // En los grupos del riel, SOLO el caret (>) abre el submenú. El resto del
+      // botón activa la herramienta actual (lo maneja main.ts) → aquí no hacemos nada.
+      if (isGroup && !(e.target as HTMLElement).closest('.tb-caret')) return;
       if (dd.classList.contains('open')) closeAllDropdowns();
       else                               openDropdown(dd, btn);
     });

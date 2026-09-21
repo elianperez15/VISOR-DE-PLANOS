@@ -1,502 +1,729 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SAF — Visor de Planos</title>
+  <title>Univera — Visor de Planos</title>
   <!-- El CSS se importa desde src/main.ts (Vite lo procesa y extrae en build) -->
 </head>
+
 <body>
-<div class="saf-app" id="app">
+  <div class="saf-app" id="app">
 
-  <!-- ══════════════════ TOOLBAR ══════════════════ -->
-  <div class="saf-toolbar" id="toolbar">
+    <!-- ══════════════════ TOOLBAR ══════════════════ -->
+    <div class="saf-toolbar" id="toolbar">
 
-    <!-- Inputs ocultos -->
-    <input type="file" id="file-input"    accept=".pdf"        hidden>
-    <input type="file" id="session-input" accept=".json"       hidden>
-    <input type="file" id="xfdf-input"    accept=".xfdf,.xml" hidden>
-    <input type="file" id="compare-input" accept=".pdf"        hidden>
+      <!-- ── Acciones (después) ── -->
+      <!-- Marcas: mostrar/ocultar + visibilidad por colaborador -->
 
-    <!-- ── Zoom ── -->
-    <button class="tb-btn tb-icon" id="btn-zoom-out" disabled title="Alejar"><i data-lucide="minus"></i></button>
-    <span class="tb-zoom-info" id="zoom-info">100%</span>
-    <button class="tb-btn tb-icon" id="btn-zoom-in"  disabled title="Acercar"><i data-lucide="plus"></i></button>
-    <button class="tb-btn tb-icon" id="btn-fit"       disabled title="Ajustar (F)"><i data-lucide="maximize"></i></button>
-    <button class="tb-btn tb-icon" id="btn-rotate-left"  disabled title="Rotar 90° a la izquierda"><i data-lucide="rotate-ccw"></i></button>
-    <button class="tb-btn tb-icon" id="btn-rotate-right" disabled title="Rotar 90° a la derecha"><i data-lucide="rotate-cw"></i></button>
+      <!-- Inputs ocultos -->
+      <input type="file" id="file-input" accept=".pdf" hidden>
+      <input type="file" id="session-input" accept=".json" hidden>
+      <input type="file" id="xfdf-input" accept=".xfdf,.xml" hidden>
+      <input type="file" id="compare-file-input" accept=".pdf,application/pdf" hidden>
 
-    <div class="tb-sep"></div>
-
-    <!-- ── Estilo ── -->
-    <label class="tb-color-wrap" title="Color de trazo">
-      <span>Trazo</span><input type="color" id="stroke-color" value="#ef4444">
-    </label>
-    <label class="tb-color-wrap" title="Color de relleno">
-      <span>Relleno</span><input type="color" id="fill-color" value="#ef4444">
-    </label>
-    <input type="range" id="fill-alpha" min="0" max="100" value="10" class="tb-range" title="Opacidad relleno">
-    <select class="tb-select" id="stroke-width" title="Grosor">
-      <option value="1">1px</option>
-      <option value="2" selected>2px</option>
-      <option value="3">3px</option>
-      <option value="5">5px</option>
-      <option value="8">8px</option>
-    </select>
-
-    <div class="tb-sep"></div>
-
-    <!-- ── Acciones ── -->
-    <button class="tb-btn tb-btn-active tb-icon" id="btn-toggle-markup" title="Mostrar/ocultar markup"><i data-lucide="eye"></i></button>
-    <button class="tb-btn tb-icon" id="btn-undo"  disabled title="Deshacer (Ctrl+Z)"><i data-lucide="undo-2"></i></button>
-    <button class="tb-btn tb-icon" id="btn-redo"  disabled title="Rehacer (Ctrl+Y)"><i data-lucide="redo-2"></i></button>
-    <button class="tb-btn tb-icon" id="btn-calibrate" disabled title="Calibrar escala"><i data-lucide="ruler"></i></button>
-    <span class="tb-scale-info" id="scale-info" title="Escala calibrada" style="display:none"></span>
-    <button class="tb-btn tb-icon tb-btn-danger" id="btn-clear"      disabled title="Eliminar mis marcas de esta página"><i data-lucide="trash-2"></i></button>
-    <button class="tb-btn tb-icon" id="btn-compare" disabled title="Comparar revisión (overlay)"><i data-lucide="layers"></i></button>
-    <div class="tb-sep"></div>
-    <button class="tb-btn tb-icon" id="btn-toggle-panel"
-            title="Mostrar / ocultar panel de propiedades  (tecla P)"><i data-lucide="panel-right"></i></button>
-
-    <!-- ── Usuario conectado (a la izquierda de Guardar) ── -->
-    <div class="tb-dropdown-wrap tb-push-right" id="users-wrap">
-      <button class="tb-btn tb-dropdown-btn" id="btn-users"
-              title="Colaboradores en este plano">
-        <span class="user-dot" id="user-dot"></span>
-        <span id="user-name-label">—</span>
-      </button>
-      <div class="tb-dropdown" id="dropdown-users" style="min-width:230px">
-
-        <!-- Lista de usuarios colaborando en el plano -->
-        <div class="tb-drop-header">Colaborando en este plano</div>
-        <div id="authors-list">
-          <div class="author-empty">Abre un plano para ver los colaboradores</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Guardar / Descargar (derecha) — se mostrarán según permisos ── -->
-    <button class="tb-btn tb-btn-save" id="btn-save-marks" disabled title="Guardar marcas"><i data-lucide="save"></i> Guardar</button>
-    <button class="tb-btn tb-btn-save" id="btn-download-doc" disabled title="Descargar documento"><i data-lucide="download"></i> Descargar</button>
-
-    <!-- Estado (derecha) -->
-    <span class="tb-status" id="tb-status">Sin documento</span>
-  </div>
-
-  <!-- ══════════════════ MAIN: riel + lienzo ══════════════════ -->
-  <div class="saf-main">
-
-    <!-- ── Riel de herramientas (estilo Procore) ── -->
-    <div class="tool-rail" id="tool-rail">
-      <div class="rail-drag" id="rail-drag" title="Arrastra para mover la barra"><i data-lucide="grip-horizontal"></i></div>
-      <button class="rail-orient-btn" id="rail-orient" title="Cambiar orientación (horizontal / vertical)"><i data-lucide="arrow-left-right"></i></button>
-      <div class="rail-sep"></div>
-      <button class="tb-btn tb-tool tb-btn-active" data-tool="select" title="Seleccionar (V)"><i data-lucide="mouse-pointer-2"></i></button>
-      <button class="tb-btn tb-tool"               data-tool="pan"    title="Mover vista (H)"><i data-lucide="hand"></i></button>
-      <button class="tb-btn tb-tool"               data-tool="eraser" title="Borrador (E)"><i data-lucide="eraser"></i></button>
-
-      <div class="rail-sep"></div>
-
-      <!-- Anotaciones -->
-      <div class="tb-dropdown-wrap">
-        <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-annot-group" title="Herramientas de anotación">
-          <span class="tool-gicon"><i data-lucide="arrow-up-right"></i></span>
-          <span class="tool-gname">Flecha</span>
-          <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+      <div class="tb-dropdown-wrap" id="markup-wrap">
+        <button class="tb-btn tb-dropdown-btn tb-btn-active" id="btn-markup-menu"
+          title="Marcas: mostrar/ocultar · por colaborador">
+          <i data-lucide="layers"></i> <span class="tb-caret"><i data-lucide="chevron-down"></i></span>
         </button>
-        <div class="tb-dropdown" id="dropdown-annot">
-          <button class="tb-drop-item tb-tool" data-tool="arrow"><i data-lucide="arrow-up-right"></i> Flecha <span class="tb-drop-kbd">A</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="rect"><i data-lucide="square"></i> Rectángulo <span class="tb-drop-kbd">R</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="ellipse"><i data-lucide="circle"></i> Elipse <span class="tb-drop-kbd">O</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="highlight"><i data-lucide="highlighter"></i> Resaltado</button>
-          <button class="tb-drop-item tb-tool" data-tool="freehand"><i data-lucide="pencil"></i> Dibujo libre <span class="tb-drop-kbd">D</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="cloud"><i data-lucide="cloud"></i> Nube de revisión</button>
-          <button class="tb-drop-item" id="btn-tool-cloud-rfi"><i data-lucide="cloud"></i> Nube RFI <span class="tb-drop-kbd">RFI</span></button>
+        <div class="tb-dropdown" id="dropdown-markup" style="min-width:240px">
+          <button class="tb-drop-item" id="btn-toggle-markup"><i data-lucide="eye"></i> Mostrar / ocultar todas las
+            marcas</button>
           <div class="tb-drop-sep"></div>
-          <button class="tb-drop-item tb-tool" data-tool="text"><i data-lucide="type"></i> Texto <span class="tb-drop-kbd">T</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="note"><i data-lucide="sticky-note"></i> Nota post-it <span class="tb-drop-kbd">N</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="callout"><i data-lucide="message-square"></i> Globo <span class="tb-drop-kbd">C</span></button>
-          <button class="tb-drop-item tb-tool" data-tool="stamp"><i data-lucide="stamp"></i> Sello</button>
-          <div class="tb-drop-sep"></div>
-          <button class="tb-drop-item tb-tool" data-tool="link"><i data-lucide="link"></i> Hipervínculo a hoja</button>
-          <div class="tb-drop-sep"></div>
-          <button class="tb-drop-item tb-tool" data-tool="image"><i data-lucide="camera"></i> Imagen / foto</button>
+          <div class="tb-drop-header">Marcas por colaborador</div>
+          <div id="authors-list">
+            <div class="author-empty">Abre un plano para ver los colaboradores</div>
+          </div>
         </div>
       </div>
+      <button class="tb-btn tb-icon" id="btn-undo" disabled title="Deshacer (Ctrl+Z)"><i
+          data-lucide="undo-2"></i></button>
+      <button class="tb-btn tb-icon" id="btn-redo" disabled title="Rehacer (Ctrl+Y)"><i
+          data-lucide="redo-2"></i></button>
+      <button class="tb-btn tb-icon tb-btn-danger" id="btn-clear" disabled title="Eliminar mis marcas de esta página"><i
+          data-lucide="trash-2"></i></button>
 
-      <!-- Medición -->
+
+      <div class="tb-sep"></div>
+
+      <!-- ── Zoom / rotación ── -->
+      <button class="tb-btn tb-icon" id="btn-rotate-left" disabled title="Rotar 90° a la izquierda"><i
+          data-lucide="rotate-ccw"></i></button>
+      <button class="tb-btn tb-icon" id="btn-rotate-right" disabled title="Rotar 90° a la derecha"><i
+          data-lucide="rotate-cw"></i></button>
+      <button class="tb-btn tb-icon" id="btn-zoom-out" disabled title="Alejar"><i data-lucide="minus"></i></button>
+      <span class="tb-zoom-info" id="zoom-info">100%</span>
+      <button class="tb-btn tb-icon" id="btn-zoom-in" disabled title="Acercar"><i data-lucide="plus"></i></button>
+      <button class="tb-btn tb-icon" id="btn-fit" disabled title="Ajustar (F)"><i data-lucide="maximize"></i></button>
+
+
+      <div class="tb-sep"></div>
+
+      <!-- ── Estilo de las anotaciones nuevas ── -->
+      <label class="tb-color-wrap" title="Color de la línea y el borde de las anotaciones">
+        <span>Trazo</span><input type="color" id="stroke-color" value="#ef4444">
+      </label>
+      <label class="tb-color-wrap" title="Color de relleno de las formas cerradas">
+        <span>Relleno</span><input type="color" id="fill-color" value="#ef4444">
+      </label>
+
+      <label class="tb-field" title="Opacidad del relleno de las formas (0 % = transparente)">
+        <span>Opacidad</span>
+        <div class="tb-field-row">
+          <input type="range" id="fill-alpha" min="0" max="100" value="10" class="tb-range">
+          <output id="fill-alpha-val" class="tb-field-val">10%</output>
+        </div>
+      </label>
+
+      <label class="tb-field" title="Grosor de la línea y el borde">
+        <span>Grosor</span>
+        <select class="tb-select" id="stroke-width">
+          <option value="1">1 px</option>
+          <option value="2" selected>2 px</option>
+          <option value="3">3 px</option>
+          <option value="5">5 px</option>
+          <option value="8">8 px</option>
+        </select>
+      </label>
+
+      <label class="tb-field" title="Tamaño del texto de las herramientas Texto, Nota y Globo">
+        <span>Texto</span>
+        <select class="tb-select" id="font-size">
+          <option value="12">12 px</option>
+          <option value="14">14 px</option>
+          <option value="16" selected>16 px</option>
+          <option value="20">20 px</option>
+          <option value="24">24 px</option>
+          <option value="32">32 px</option>
+          <option value="48">48 px</option>
+        </select>
+      </label>
+
+
+      <div class="tb-sep"></div>
+      <button class="tb-btn tb-icon" id="btn-toggle-panel" title="Mostrar / ocultar panel de propiedades  (tecla P)"><i
+          data-lucide="panel-right"></i></button>
+
+      <button class="tb-btn tb-icon" id="btn-compare" disabled title="Comparar revisión (overlay)"><i
+          data-lucide="compare"></i></button>
+
+      <button class="tb-btn tb-icon" id="btn-snapshot" disabled
+        title="Captura de pantalla por selección — arrastra o marca dos puntos y descarga el área en PNG"><i
+          data-lucide="screenshot"></i></button>
+
+      <span class="tb-scale-info" id="scale-info" title="Escala calibrada" style="display:none"></span>
+
+      <!-- Empuja el grupo derecho al extremo (aunque Guardar/Descargar se oculten) -->
+      <div class="tb-spacer"></div>
+
+      <!-- ── Guardar / Descargar (según permisos) · Cerrar (siempre visible) ── -->
+     
+      <!-- Descargar: submenú con PDF con marcas / sin marcas -->
       <div class="tb-dropdown-wrap">
-        <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-measure-group" title="Herramientas de medición">
-          <span class="tool-gicon"><i data-lucide="ruler"></i></span>
-          <span class="tool-gname">Cota</span>
-          <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
-        </button>
-        <div class="tb-dropdown" id="dropdown-measure">
-          <div class="tb-drop-header">Requiere calibración de escala</div>
-          <button class="tb-drop-item tb-tool" data-tool="measure"><i data-lucide="move-horizontal"></i> Cota lineal</button>
-          <button class="tb-drop-item tb-tool" data-tool="angle"><i data-lucide="triangle"></i> Ángulo (3 clics)</button>
-          <button class="tb-drop-item tb-tool" data-tool="area"><i data-lucide="hexagon"></i> Área</button>
-          <button class="tb-drop-item tb-tool" data-tool="perimeter"><i data-lucide="spline"></i> Perímetro</button>
+        <button class="tb-btn tb-btn-save tb-dropdown-btn" id="btn-download-doc" disabled
+          title="Descargar documento en PDF"><i data-lucide="download"></i> <span class="tb-caret"><i
+              data-lucide="chevron-down"></i></span></button>
+        <div class="tb-dropdown" id="dropdown-download">
+          <div class="tb-drop-header">Descargar en PDF</div>
+          <button class="tb-drop-item" id="btn-dl-pdf-marks"><i data-lucide="file-pen"></i> Con marcas</button>
+          <button class="tb-drop-item" id="btn-dl-pdf-clean"><i data-lucide="file"></i> Sin marcas (original)</button>
+        </div>
+      </div>
+      <button class="tb-btn tb-btn-save" id="btn-close-viewer" title="Cerrar visor"><i data-lucide="x"></i>
+        Cerrar</button>
+      <button class="tb-btn tb-btn-save" id="btn-save-marks" disabled title="Guardar marcas"><i data-lucide="save"></i>
+      Guardar</button>
+
+      <!-- Estado (derecha) -->
+      <span class="tb-status" id="tb-status">Sin documento</span>
+    </div>
+
+    <!-- ══════════════════ MAIN: riel + lienzo ══════════════════ -->
+    <div class="saf-main">
+
+      <!-- ── Riel de herramientas (estilo Procore) ── -->
+      <div class="tool-rail" id="tool-rail">
+        <div class="rail-drag" id="rail-drag" title="Arrastra para mover la barra"><i data-lucide="grip-horizontal"></i>
+        </div>
+        <button class="rail-orient-btn" id="rail-orient" title="Cambiar orientación (horizontal / vertical)"><i
+            data-lucide="arrow-left-right"></i></button>
+        <div class="rail-sep"></div>
+        <button class="tb-btn tb-tool tb-btn-active" data-tool="select" title="Seleccionar (V)"><i
+            data-lucide="mouse-pointer-2"></i></button>
+        <button class="tb-btn tb-tool" data-tool="pan" title="Mover vista (H)"><i data-lucide="hand"></i></button>
+        <button class="tb-btn tb-tool" data-tool="eraser" title="Borrador (E)"><i data-lucide="eraser"></i></button>
+
+        <div class="rail-sep"></div>
+
+        <!-- Grupo: Flecha · Dibujo libre · Resaltador -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-annot-group" data-tool="arrow"
+            title="Anotación (flecha, dibujo, resaltador)">
+            <span class="tool-gicon"><i data-lucide="arrow-up-right"></i></span>
+            <span class="tool-gname">Flecha</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-annot">
+            <button class="tb-drop-item tb-tool" data-tool="arrow"><i data-lucide="arrow-up-right"></i> Flecha</button>
+            <button class="tb-drop-item tb-tool" data-tool="line"><i data-lucide="minus"></i> Línea</button>
+            <button class="tb-drop-item tb-tool" data-tool="freehand"><i data-lucide="pencil"></i> Dibujo libre</button>
+            <button class="tb-drop-item tb-tool" data-tool="highlight"><i data-lucide="highlighter"></i>
+              Resaltador</button>
+          </div>
+        </div>
+
+        <!-- Grupo: Rectángulo · Elipse -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-shapes-group" data-tool="rect"
+            title="Formas (rectángulo, elipse)">
+            <span class="tool-gicon"><i data-lucide="square"></i></span>
+            <span class="tool-gname">Rect</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-shapes">
+            <button class="tb-drop-item tb-tool" data-tool="rect"><i data-lucide="square"></i> Rectángulo</button>
+            <button class="tb-drop-item tb-tool" data-tool="ellipse"><i data-lucide="circle"></i> Elipse</button>
+          </div>
+        </div>
+
+        <!-- Grupo: Nube normal (arrastrar) · Nube de puntos (multi-clic) -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-cloud-group" data-tool="cloud"
+            title="Nube de revisión (normal / de puntos)">
+            <span class="tool-gicon"><i data-lucide="cloud"></i></span>
+            <span class="tool-gname">Nube</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-cloud">
+            <button class="tb-drop-item tb-tool" data-tool="cloud"><i data-lucide="cloud"></i> Nube (Dos Puntos)</button>
+            <button class="tb-drop-item tb-tool" data-tool="cloud-poly"><i data-lucide="cloud"></i> Nube (Múltiple Puntos)</button>
+          </div>
+        </div>
+
+
+
+        <!-- Grupo: Texto · Nota · Globo -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-text-group" data-tool="text"
+            title="Texto (texto, nota, globo)">
+            <span class="tool-gicon"><i data-lucide="type"></i></span>
+            <span class="tool-gname">Texto</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-text">
+            <button class="tb-drop-item tb-tool" data-tool="text"><i data-lucide="type"></i> Texto</button>
+            <button class="tb-drop-item tb-tool" data-tool="note"><i data-lucide="sticky-note"></i> Nota
+              post-it</button>
+            <button class="tb-drop-item tb-tool" data-tool="callout"><i data-lucide="message-square"></i> Globo</button>
+          </div>
+        </div>
+
+        <!-- Sello (botón directo) -->
+        <button class="tb-btn tb-tool" data-tool="stamp" title="Sello"><i data-lucide="stamp"></i></button>
+
+
+
+        <!-- Medición -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-measure-group" data-tool="measure"
+            title="Medición (calibrar, cota, ángulo, área, perímetro)">
+            <span class="tool-gicon"><i data-lucide="ruler"></i></span>
+            <span class="tool-gname">Cota</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-measure">
+            <button class="tb-drop-item" id="btn-calibrate" disabled><i data-lucide="ruler"></i> Calibrar
+              escala…</button>
+            <div class="tb-drop-sep"></div>
+            <div class="tb-drop-header">Cotas (requieren calibración)</div>
+            <button class="tb-drop-item tb-tool" data-tool="measure"><i data-lucide="move-horizontal"></i> Cota
+              lineal</button>
+            <button class="tb-drop-item tb-tool" data-tool="angle"><i data-lucide="triangle"></i> Ángulo (3
+              clics)</button>
+            <button class="tb-drop-item tb-tool" data-tool="area"><i data-lucide="hexagon"></i> Área</button>
+            <button class="tb-drop-item tb-tool" data-tool="perimeter"><i data-lucide="spline"></i> Perímetro</button>
+          </div>
+        </div>
+
+        <div class="rail-sep"></div>
+
+        <!-- Grupo Nube RFI — nube roja con etiqueta "RFI": dos puntos (arrastrar)
+             o múltiples puntos (multi-clic). El caret (>) abre las dos opciones. -->
+        <div class="tb-dropdown-wrap">
+          <button class="tb-btn rfi-cloud-btn tb-dropdown-btn rail-group" id="btn-tool-cloud-rfi" data-rfi-tool="cloud"
+            title="Nube RFI (dos puntos / múltiples puntos)">
+            <span class="tool-gicon rfi-cloud-ic"><i data-lucide="cloud"></i><span
+                class="rfi-cloud-tag">RFI</span></span>
+            <span class="tool-gname">Nube RFI</span>
+            <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+          </button>
+          <div class="tb-dropdown" id="dropdown-cloud-rfi">
+            <button class="tb-drop-item" data-rfi-tool="cloud"><i data-lucide="cloud"></i> Nube RFI (Dos
+              Puntos)</button>
+            <button class="tb-drop-item" data-rfi-tool="cloud-poly"><i data-lucide="cloud"></i> Nube RFI (Múltiple
+              Puntos)</button>
+          </div>
+        </div>
+
+        <!-- Hipervínculo (botón directo) -->
+        <button class="tb-btn tb-tool" data-tool="link" title="Hipervínculo a hoja"><i data-lucide="link"></i></button>
+
+        <!-- Imagen (botón directo) -->
+        <button class="tb-btn tb-tool" data-tool="image" title="Imagen / foto"><i data-lucide="image"></i></button>
+
+      </div>
+
+      <!-- Selector de archivo para colocar imágenes en el plano -->
+      <input type="file" id="img-place-input" accept="image/*" hidden>
+
+      <!-- ══════════════════ LIENZO ══════════════════ -->
+      <div class="saf-canvas" id="canvas-area">
+
+        <!-- Pantalla vacía — arranca OCULTA: sólo se muestra si no se carga
+             ningún plano (ver showEmptyState/scheduleEmptyState en main.ts) -->
+        <div class="empty-state" id="empty-state" style="display:none">
+          <div class="empty-box">
+            <div class="empty-icon"><i data-lucide="ruler"></i></div>
+            <h2>Visor de Planos Univera</h2>
+            <p>Abre un PDF para agregar anotaciones · Guarda como <strong>.xfdf</strong> portable o
+              <strong>.json</strong> interno
+            </p>
+            <button class="btn-open-large" id="btn-open-large"><i data-lucide="folder-open"></i> Abrir PDF</button>
+            <div class="empty-tools">
+              <span><i data-lucide="cloud"></i> Nubes de revisión</span>
+              <span><i data-lucide="ruler"></i> Cotas con escala</span>
+              <span><i data-lucide="triangle"></i> Ángulos</span>
+              <span><i data-lucide="hexagon"></i> Áreas y perímetros</span>
+              <span><i data-lucide="message-square"></i> Callouts</span>
+              <span><i data-lucide="stamp"></i> Sellos APROBADO/RFI</span>
+              <span><i data-lucide="file-text"></i> Export XFDF portable</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Canvas Fabric.js -->
+        <div class="canvas-wrapper" id="canvas-wrapper" style="display:none">
+          <canvas id="fabric-canvas"></canvas>
+        </div>
+
+        <!-- Hint modo dibujo -->
+        <div class="draw-hint" id="draw-hint" style="display:none"></div>
+
+        <!-- Barra de confirmación al seleccionar un área para descargar como imagen -->
+        <div class="region-bar" id="region-bar" style="display:none">
+          <span class="region-bar-msg" id="region-bar-msg"><i data-lucide="crop"></i> Arrastra el área — o haz clic en
+            dos puntos opuestos</span>
+          <div class="region-bar-actions">
+            <button class="region-btn region-cancel" id="btn-region-cancel"><i data-lucide="x"></i> Cancelar</button>
+            <button class="region-btn region-ok" id="btn-region-confirm" disabled><i data-lucide="check"></i>
+              Confirmar</button>
+          </div>
+        </div>
+
+        <!-- Loader ligero: calculando las diferencias entre revisiones -->
+        <div class="compare-loading" id="compare-loading" style="display:none">
+          <span class="cmp-spin"></span>
+          <span>Calculando diferencias…</span>
+        </div>
+
+        <!-- Loader: cargando un plano desde el servidor (marca AICSA) -->
+        <div class="plano-loader" id="plano-loader" style="display:none">
+          <div class="plano-loader-box">
+            <div class="plano-brand">
+              <span class="pb-word" style="--i:0">Visor</span>
+              <span class="pb-word" style="--i:1">de</span>
+              <span class="pb-word" style="--i:2">Planos</span>
+              <span class="pb-saf" style="--i:3">Univera<i class="pb-dot"></i></span>
+            </div>
+            <div class="plano-bar"><span></span></div>
+            <div class="plano-loader-text" id="plano-loader-text">Cargando plano…</div>
+            <div class="plano-tag">Construyendo una Guatemala mejor</div>
+          </div>
+        </div>
+      </div><!-- .saf-canvas -->
+
+    </div><!-- .saf-main -->
+
+    <!-- Panel área/perímetro -->
+    <div class="area-panel" id="area-panel" style="display:none">
+      <span id="area-value">—</span>
+      <button id="btn-area-close" title="Cerrar"><i data-lucide="x"></i></button>
+    </div>
+
+    <!-- Barra de comparación de revisiones -->
+    <div class="compare-bar" id="compare-bar" style="display:none">
+      <button class="cmp-icon" id="btn-compare-folder" title="Cambiar de plano a comparar"><i
+          data-lucide="folder-open"></i></button>
+
+      <div class="cmp-revs">
+        <span class="cmp-rev"><b class="cmp-tag cmp-tag-a">Base</b><span class="cmp-name" id="cmp-name-a"
+            title="">—</span></span>
+        <span class="cmp-rev"><b class="cmp-tag cmp-tag-b">Comparada</b><span class="cmp-name" id="cmp-name-b"
+            title="">—</span></span>
+      </div>
+
+      <span class="cmp-div"></span>
+
+      <div class="cmp-actions">
+        <button id="btn-compare-align" title="Ajustar alineación — arrastra la revisión o usa las flechas del teclado"><i
+            data-lucide="move"></i></button>
+        <button id="btn-compare-align-reset" title="Reiniciar alineación"><i data-lucide="rotate-ccw"></i></button>
+
+        <!-- Descargar como imagen (plano completo / seleccionar área) -->
+        <div class="cmp-dl-wrap">
+          <button id="btn-compare-download" title="Descargar como imagen"><i data-lucide="download"></i></button>
+          <div class="cmp-dl-menu tb-dropdown-menu" id="cmp-dl-menu">
+            <div class="tb-drop-header">Descargar como imagen</div>
+            <button class="tb-drop-item" id="btn-dl-full"><i data-lucide="image"></i> Descarga completa</button>
+            <button class="tb-drop-item" id="btn-dl-region"><i data-lucide="crop"></i> Descarga por selección</button>
+          </div>
+        </div>
+
+        <button id="btn-compare-close" title="Cerrar comparación"><i data-lucide="x"></i></button>
+      </div>
+    </div>
+
+    <!-- Toast de guardado (éxito / error / en progreso) -->
+    <div class="save-toast" id="save-toast" role="status" aria-live="polite">
+      <span class="save-toast-ic" id="save-toast-ic"></span>
+      <span class="save-toast-msg" id="save-toast-msg"></span>
+    </div>
+
+  </div><!-- .saf-app -->
+
+  <!-- ══════════════════ MODAL: Calibrar escala ══════════════════ -->
+  <div class="modal-overlay modal-pick" id="modal-calibrate" style="display:none">
+    <div class="modal-box cal-box">
+
+      <!-- Cabecera -->
+      <div class="cal-head">
+        <span class="cal-head-title"><span class="cal-head-ic"><i data-lucide="ruler"></i></span> Calibrar escala</span>
+      </div>
+
+      <!-- Tabs tipo segmento -->
+      <div class="cal-tabs">
+        <button class="cal-tab cal-tab-active" id="btn-cal-tab-points"><i data-lucide="ruler"></i> Medir 2
+          puntos</button>
+        <button class="cal-tab" id="btn-cal-tab-direct"><i data-lucide="type"></i> Escala directa</button>
+      </div>
+
+      <!-- ── Modo: 2 puntos ── -->
+      <div id="cal-mode-points">
+        <!-- Indicador de pasos -->
+        <div class="cal-steps" id="cal-steps">
+          <span class="cal-step-chip" data-step="1"><span class="cal-step-n">1</span> Punto A</span>
+          <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
+          <span class="cal-step-chip" data-step="2"><span class="cal-step-n">2</span> Punto B</span>
+          <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
+          <span class="cal-step-chip" data-step="3"><span class="cal-step-n">3</span> Distancia</span>
+        </div>
+
+        <div id="cal-step-1" class="cal-panel">
+          <p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Haz clic en el <strong>primer punto</strong> de
+            referencia sobre el plano.</p>
+        </div>
+        <div id="cal-step-2" class="cal-panel" style="display:none">
+          <p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Ahora haz clic en el <strong>segundo
+              punto</strong>.</p>
+        </div>
+        <div id="cal-step-3" class="cal-panel" style="display:none">
+          <p class="cal-measured" id="cal-px-hint"></p>
+          <div class="cal-field">
+            <label for="cal-value">Distancia real entre esos puntos</label>
+            <div class="cal-input-row">
+              <input type="number" id="cal-value" placeholder="ej: 5.00" min="0.001" step="any">
+              <select id="cal-unit" class="cal-select">
+                <option value="m">m</option>
+                <option value="cm">cm</option>
+                <option value="mm">mm</option>
+                <option value="ft">ft</option>
+                <option value="in">in</option>
+              </select>
+            </div>
+          </div>
+          <button class="cal-reset" id="btn-cal-reset"><i data-lucide="rotate-ccw"></i> Volver a marcar los
+            puntos</button>
         </div>
       </div>
 
-    </div>
-
-    <!-- Selector de archivo para colocar imágenes en el plano -->
-    <input type="file" id="img-place-input" accept="image/*" hidden>
-
-  <!-- ══════════════════ LIENZO ══════════════════ -->
-  <div class="saf-canvas" id="canvas-area">
-
-    <!-- Pantalla vacía -->
-    <div class="empty-state" id="empty-state">
-      <div class="empty-box">
-        <div class="empty-icon"><i data-lucide="ruler"></i></div>
-        <h2>Visor de Planos SAF</h2>
-        <p>Abre un PDF para agregar anotaciones · Guarda como <strong>.xfdf</strong> portable o <strong>.json</strong> interno</p>
-        <button class="btn-open-large" id="btn-open-large"><i data-lucide="folder-open"></i> Abrir PDF</button>
-        <div class="empty-tools">
-          <span>☁ Nubes de revisión</span>
-          <span>📏 Cotas con escala</span>
-          <span>∠ Ángulos</span>
-          <span>⬡ Áreas y perímetros</span>
-          <span>💬 Callouts</span>
-          <span>🔖 Sellos APROBADO/RFI</span>
-          <span>📄 Export XFDF portable</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Canvas Fabric.js -->
-    <div class="canvas-wrapper" id="canvas-wrapper" style="display:none">
-      <canvas id="fabric-canvas"></canvas>
-    </div>
-
-    <!-- Hint modo dibujo -->
-    <div class="draw-hint" id="draw-hint" style="display:none"></div>
-
-    <!-- Loader: cargando un plano desde el servidor (marca AICSA) -->
-    <div class="plano-loader" id="plano-loader" style="display:none">
-      <div class="plano-loader-box">
-        <div class="plano-brand">
-          <span class="pb-word" style="--i:0">Visor</span>
-          <span class="pb-word" style="--i:1">de</span>
-          <span class="pb-word" style="--i:2">Planos</span>
-          <span class="pb-saf" style="--i:3">SAF<i class="pb-dot"></i></span>
-        </div>
-        <div class="plano-bar"><span></span></div>
-        <div class="plano-loader-text" id="plano-loader-text">Cargando plano…</div>
-        <div class="plano-tag">Construyendo una Guatemala mejor</div>
-      </div>
-    </div>
-  </div><!-- .saf-canvas -->
-
-  </div><!-- .saf-main -->
-
-  <!-- Panel área/perímetro -->
-  <div class="area-panel" id="area-panel" style="display:none">
-    <span id="area-value">—</span>
-    <button id="btn-area-close" title="Cerrar"><i data-lucide="x"></i></button>
-  </div>
-
-  <!-- Barra de comparación de revisiones -->
-  <div class="compare-bar" id="compare-bar" style="display:none">
-    <span class="cmp-icon"><i data-lucide="layers"></i></span>
-    <div class="cmp-revs">
-      <span class="cmp-a"><b>A</b> <span id="cmp-name-a">—</span></span>
-      <span class="cmp-b"><b>B</b> <span id="cmp-name-b">—</span></span>
-    </div>
-    <div class="cmp-slider">
-      <span>A</span>
-      <input type="range" id="cmp-opacity" min="0" max="100" value="50" title="Opacidad de la Revisión B">
-      <span>B</span>
-    </div>
-    <label class="cmp-tint"><input type="checkbox" id="cmp-tint"> Resaltar B en rojo</label>
-    <button id="btn-compare-change" title="Cambiar Revisión B (cargar otro PDF)"><i data-lucide="refresh-cw"></i></button>
-    <button id="btn-compare-close" title="Cerrar comparación"><i data-lucide="x"></i></button>
-  </div>
-
-  <!-- Toast de guardado (éxito / error / en progreso) -->
-  <div class="save-toast" id="save-toast" role="status" aria-live="polite">
-    <span class="save-toast-ic" id="save-toast-ic"></span>
-    <span class="save-toast-msg" id="save-toast-msg"></span>
-  </div>
-
-</div><!-- .saf-app -->
-
-<!-- ══════════════════ MODAL: Calibrar escala ══════════════════ -->
-<div class="modal-overlay modal-pick" id="modal-calibrate" style="display:none">
-  <div class="modal-box cal-box">
-
-    <!-- Cabecera -->
-    <div class="cal-head">
-      <span class="cal-head-title"><span class="cal-head-ic">📐</span> Calibrar escala</span>
-    </div>
-
-    <!-- Tabs tipo segmento -->
-    <div class="cal-tabs">
-      <button class="cal-tab cal-tab-active" id="btn-cal-tab-points"><i data-lucide="ruler"></i> Medir 2 puntos</button>
-      <button class="cal-tab" id="btn-cal-tab-direct"><i data-lucide="type"></i> Escala directa</button>
-    </div>
-
-    <!-- ── Modo: 2 puntos ── -->
-    <div id="cal-mode-points">
-      <!-- Indicador de pasos -->
-      <div class="cal-steps" id="cal-steps">
-        <span class="cal-step-chip" data-step="1"><span class="cal-step-n">1</span> Punto A</span>
-        <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
-        <span class="cal-step-chip" data-step="2"><span class="cal-step-n">2</span> Punto B</span>
-        <span class="cal-step-arrow"><i data-lucide="chevron-right"></i></span>
-        <span class="cal-step-chip" data-step="3"><span class="cal-step-n">3</span> Distancia</span>
-      </div>
-
-      <div id="cal-step-1" class="cal-panel"><p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Haz clic en el <strong>primer punto</strong> de referencia sobre el plano.</p></div>
-      <div id="cal-step-2" class="cal-panel" style="display:none"><p class="modal-hint"><i data-lucide="mouse-pointer-2"></i> Ahora haz clic en el <strong>segundo punto</strong>.</p></div>
-      <div id="cal-step-3" class="cal-panel" style="display:none">
-        <p class="cal-measured" id="cal-px-hint"></p>
+      <!-- ── Modo: directo ── -->
+      <div id="cal-mode-direct" style="display:none">
+        <p class="cal-desc">Ingresa la equivalencia directamente, sin marcar el plano.</p>
         <div class="cal-field">
-          <label for="cal-value">Distancia real entre esos puntos</label>
-          <div class="cal-input-row">
-            <input type="number" id="cal-value" placeholder="ej: 5.00" min="0.001" step="any">
-            <select id="cal-unit" class="cal-select">
-              <option value="m">m</option><option value="cm">cm</option>
-              <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
+          <label>Equivalencia píxeles → distancia real</label>
+          <div class="cal-input-row cal-direct-row">
+            <input type="number" id="cal-px-direct" placeholder="px" min="1" step="any">
+            <span class="cal-eq">px&nbsp;=</span>
+            <input type="number" id="cal-val-direct" placeholder="valor" min="0.001" step="any">
+            <select id="cal-unit-direct" class="cal-select">
+              <option value="m">m</option>
+              <option value="cm">cm</option>
+              <option value="mm">mm</option>
+              <option value="ft">ft</option>
+              <option value="in">in</option>
             </select>
           </div>
         </div>
-        <button class="cal-reset" id="btn-cal-reset"><i data-lucide="rotate-ccw"></i> Volver a marcar los puntos</button>
+        <p class="cal-direct-hidden" id="cal-direct-preview"></p>
+      </div>
+
+      <!-- Vista previa del resultado (compartida) -->
+      <div class="cal-result" id="cal-result" style="display:none">
+        <span class="cal-result-label"><i data-lucide="check"></i> Escala resultante</span>
+        <span class="cal-result-value" id="cal-result-value">—</span>
+      </div>
+
+      <div class="modal-actions">
+        <button class="tb-btn" id="btn-cal-cancel"><i data-lucide="x"></i> Cancelar</button>
+        <button class="tb-btn tb-btn-primary" id="btn-cal-apply" disabled>Aplicar escala</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ MODAL: Sello ══════════════════ -->
+  <div class="modal-overlay" id="modal-stamp" style="display:none">
+    <div class="modal-box modal-stamp">
+      <h3><i data-lucide="stamp"></i> Insertar Sello</h3>
+      <div class="stamp-grid">
+        <button class="stamp-opt s-approved" data-stamp="APROBADO" data-color="#16a34a"><i
+            data-lucide="check-circle"></i> APROBADO</button>
+        <button class="stamp-opt s-rejected" data-stamp="RECHAZADO" data-color="#dc2626"><i data-lucide="x-circle"></i>
+          RECHAZADO</button>
+        <button class="stamp-opt s-review" data-stamp="EN REVISIÓN" data-color="#d97706"><i data-lucide="search"></i> EN
+          REVISIÓN</button>
+        <button class="stamp-opt s-info" data-stamp="INFORMACIÓN" data-color="#2563eb"><i data-lucide="info"></i>
+          INFORMACIÓN</button>
+        <button class="stamp-opt s-warning" data-stamp="PRECAUCIÓN" data-color="#b45309"><i
+            data-lucide="alert-triangle"></i> PRECAUCIÓN</button>
+        <button class="stamp-opt s-draft" data-stamp="BORRADOR" data-color="#6b7280"><i data-lucide="file-pen"></i>
+          BORRADOR</button>
+        <button class="stamp-opt s-nci" data-stamp="NCI" data-color="#7c3aed"><i data-lucide="alert-circle"></i>
+          NCI</button>
+        <button class="stamp-opt s-rfi" data-stamp="RFI" data-color="#0891b2"><i data-lucide="clipboard-list"></i>
+          RFI</button>
+      </div>
+      <!-- ── Etiquetas de estado (borde doble) ── -->
+      <div class="stamp-section-title">Etiquetas de estado</div>
+      <div class="stamp-grid label-grid">
+        <button class="stamp-label" data-stamp="ORIGINAL" data-color="#3b82f6" data-style="label">ORIGINAL</button>
+        <button class="stamp-label" data-stamp="RECEIVED" data-color="#22c55e" data-style="label">RECEIVED</button>
+        <button class="stamp-label" data-stamp="ISSUED" data-color="#06b6d4" data-style="label">ISSUED</button>
+        <button class="stamp-label" data-stamp="FINAL" data-color="#8b5cf6" data-style="label">FINAL</button>
+        <button class="stamp-label" data-stamp="FOR REVIEW" data-color="#f59e0b" data-style="label">FOR REVIEW</button>
+        <button class="stamp-label" data-stamp="SUPERSEDED" data-color="#64748b" data-style="label">SUPERSEDED</button>
+        <button class="stamp-label" data-stamp="PAST DUE" data-color="#ef4444" data-style="hatch">PAST DUE</button>
+        <button class="stamp-label" data-stamp="VOID" data-color="#6b7280" data-style="hatch">VOID</button>
+        <button class="stamp-label" data-stamp="CANCELLED" data-color="#dc2626" data-style="hatch">CANCELLED</button>
+        <button class="stamp-label" data-stamp="REJECTED" data-color="#b45309" data-style="hatch">REJECTED</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="tb-btn" id="btn-stamp-cancel"><i data-lucide="x"></i> Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tooltip flotante: autor de la anotación -->
+  <div id="annot-tooltip" class="annot-tooltip"></div>
+
+  <!-- Lightbox para ver imágenes adjuntas -->
+  <div id="att-lightbox" class="att-lightbox" style="display:none">
+    <img id="att-lightbox-img" alt="Adjunto">
+  </div>
+
+  <!-- Selector de plano destino para el hipervínculo -->
+  <div class="modal-overlay" id="modal-plano" style="display:none">
+    <div class="modal-card plano-pick-card">
+      <div class="modal-head">
+        <span><i data-lucide="link"></i> Elegir plano destino</span>
+      </div>
+      <input type="text" id="plano-search" class="plano-search" placeholder="Buscar por número, descripción…"
+        autocomplete="off">
+      <div class="plano-list" id="plano-list">
+        <div class="plano-empty">Cargando planos…</div>
+      </div>
+      <div class="modal-actions">
+        <button class="tb-btn" id="btn-plano-close"><i data-lucide="x"></i> Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de confirmación (acciones destructivas) -->
+  <div class="modal-overlay" id="modal-confirm" style="display:none">
+    <div class="modal-card confirm-card">
+      <div class="confirm-icon"><i data-lucide="alert-triangle"></i></div>
+      <div class="confirm-title" id="confirm-title">¿Confirmar?</div>
+      <div class="confirm-msg" id="confirm-msg"></div>
+      <div class="confirm-actions">
+        <button class="confirm-btn confirm-cancel" id="confirm-cancel"><i data-lucide="x"></i> Cancelar</button>
+        <button class="confirm-btn confirm-ok confirm-danger" id="confirm-ok">Aceptar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Selector de RFI para el sello RFI (mismo estilo) -->
+  <div class="modal-overlay" id="modal-rfi" style="display:none">
+    <div class="modal-card plano-pick-card">
+      <div class="modal-head">
+        <span><i data-lucide="clipboard-list"></i> Elegir RFI</span>
+      </div>
+      <input type="text" id="rfi-search" class="plano-search" placeholder="Buscar RFI…" autocomplete="off">
+      <!-- Crear un RFI nuevo en APEX (no envía ningún id). Va fuera de la lista,
+           así el buscador no la filtra y queda siempre visible. -->
+      <button class="plano-row plano-row-action" id="btn-rfi-create" type="button">
+        <i data-lucide="plus"></i><span>Crear</span>
+      </button>
+      <div class="plano-list" id="rfi-list">
+        <div class="plano-empty">Cargando RFIs…</div>
+      </div>
+      <div class="modal-actions">
+        <button class="tb-btn" id="btn-rfi-close"><i data-lucide="x"></i> Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Selector de revisión a comparar (mismo listado/BD que los hipervínculos) -->
+  <div class="modal-overlay" id="modal-compare" style="display:none">
+    <div class="modal-card plano-pick-card">
+      <div class="modal-head">
+        <span><i data-lucide="compare"></i> Comparar con otra revisión</span>
+      </div>
+      <!-- Comparar contra un PDF del equipo del usuario (clic o arrastrar) -->
+      <button class="cmp-drop" id="cmp-drop" type="button">
+        <i data-lucide="upload"></i>
+        <span><b>Subir un PDF de mi equipo</b><small>Haz clic para elegir el archivo o arrástralo aquí</small></span>
+      </button>
+
+      <div class="cmp-or"><span>o elige un plano del repositorio</span></div>
+
+      <input type="text" id="compare-search" class="plano-search" placeholder="Buscar plano…" autocomplete="off">
+      <div class="plano-list" id="compare-list">
+        <div class="plano-empty">Cargando planos…</div>
+      </div>
+      <div class="modal-actions">
+        <button class="tb-btn" id="btn-compare-pick-close"><i data-lucide="x"></i> Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mini-toolbar flotante sobre la figura seleccionada -->
+  <div id="fig-toolbar" class="fig-toolbar" style="display:none">
+    <button id="fig-toggle-att" title="Mostrar / ocultar el adjunto en el plano"></button>
+    <button id="fig-enlarge-att" title="Ampliar imagen"><i data-lucide="maximize"></i></button>
+  </div>
+
+  <!-- ══════════════════ PANEL: Propiedades de anotación ══════════════════ -->
+  <div id="annot-panel" class="annot-panel" style="display:none">
+
+    <!-- Cabecera -->
+    <div class="ap-header">
+      <span class="ap-title"><i data-lucide="clipboard-list"></i> Propiedades</span>
+      <button class="ap-close" id="btn-ap-close" title="Cerrar panel"><i data-lucide="x"></i></button>
+    </div>
+
+    <!-- Identidad (readonly) -->
+    <div class="ap-identity">
+      <span class="ap-id-dot" id="ap-id-dot"></span>
+      <div class="ap-id-info">
+        <span class="ap-id-autor" id="ap-id-autor">—</span>
+        <span class="ap-id-meta" id="ap-id-meta">—</span>
       </div>
     </div>
 
-    <!-- ── Modo: directo ── -->
-    <div id="cal-mode-direct" style="display:none">
-      <p class="cal-desc">Ingresa la equivalencia directamente, sin marcar el plano.</p>
-      <div class="cal-field">
-        <label>Equivalencia píxeles → distancia real</label>
-        <div class="cal-input-row cal-direct-row">
-          <input type="number" id="cal-px-direct" placeholder="px" min="1" step="any">
-          <span class="cal-eq">px&nbsp;=</span>
-          <input type="number" id="cal-val-direct" placeholder="valor" min="0.001" step="any">
-          <select id="cal-unit-direct" class="cal-select">
-            <option value="m">m</option><option value="cm">cm</option>
-            <option value="mm">mm</option><option value="ft">ft</option><option value="in">in</option>
-          </select>
+    <!-- Aviso de solo lectura (figura de otro usuario) -->
+    <div class="ap-readonly-banner" id="ap-readonly-banner" style="display:none">
+      <i data-lucide="lock"></i> Figura de otro usuario — solo lectura
+    </div>
+
+    <!-- Cuerpo con scroll -->
+    <div class="ap-body">
+
+      <!-- ── Hipervínculo (solo para enlaces) ── -->
+      <div class="ap-section" id="ap-link-section" style="display:none">
+        <div class="ap-section-label">Hipervínculo</div>
+
+        <!-- Enlace a OTRO plano (lo elige APEX desde su listado) -->
+        <div class="ap-field">
+          <label>Plano destino</label>
+          <div class="ap-link-target">
+            <span id="ap-link-target-name" class="ap-link-target-name">— sin destino —</span>
+            <button class="ap-att-add" id="btn-ap-pick-plano"><i data-lucide="link"></i> Elegir plano…</button>
+            <button class="ap-link-clear" id="btn-ap-clear-plano" title="Quitar destino"><i
+                data-lucide="x"></i></button>
+          </div>
+        </div>
+
+        <div class="ap-link-hint">Doble clic en el enlace para abrir el plano destino.</div>
+      </div>
+
+      <!-- ── RFI (solo para el sello RFI) ── -->
+      <div class="ap-section" id="ap-rfi-section" style="display:none">
+        <div class="ap-section-label">RFI vinculado</div>
+        <div class="ap-field">
+          <label>RFI</label>
+          <div class="ap-link-target">
+            <span id="ap-rfi-name" class="ap-link-target-name">— sin RFI —</span>
+            <button class="ap-att-add" id="btn-ap-pick-rfi"><i data-lucide="file-text"></i> Elegir RFI…</button>
+            <button class="ap-link-clear" id="btn-ap-clear-rfi" title="Quitar RFI"><i data-lucide="x"></i></button>
+          </div>
+        </div>
+        <div class="ap-link-hint">Al elegir un RFI se abre su detalle. Doble clic en el sello también lo abre.</div>
+      </div>
+
+      <!-- ── Adjuntos (fotos / archivos) — solo para el pin de cámara ── -->
+      <div class="ap-section" id="ap-att-section" style="display:none">
+        <div class="ap-section-label">Adjuntos <span id="ap-att-count" class="ap-att-count"></span></div>
+        <button class="ap-att-add" id="btn-ap-attach"><i data-lucide="image-plus"></i> Adjuntar foto o archivo</button>
+        <input type="file" id="ap-att-input" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" hidden>
+        <div class="ap-att-grid" id="ap-att-grid"></div>
+      </div>
+
+      <!-- ── Texto en la figura ── -->
+      <div class="ap-section" id="ap-text-section">
+        <div class="ap-section-label">Texto en la figura</div>
+        <div class="ap-field">
+          <input type="text" id="ap-label" placeholder="Escribe una etiqueta…  (o doble clic en la figura)"
+            maxlength="120">
         </div>
       </div>
-      <p class="cal-direct-hidden" id="cal-direct-preview"></p>
-    </div>
 
-    <!-- Vista previa del resultado (compartida) -->
-    <div class="cal-result" id="cal-result" style="display:none">
-      <span class="cal-result-label"><i data-lucide="check"></i> Escala resultante</span>
-      <span class="cal-result-value" id="cal-result-value">—</span>
-    </div>
-
-    <div class="modal-actions">
-      <button class="tb-btn" id="btn-cal-cancel">Cancelar</button>
-      <button class="tb-btn tb-btn-primary" id="btn-cal-apply" disabled>Aplicar escala</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══════════════════ MODAL: Sello ══════════════════ -->
-<div class="modal-overlay" id="modal-stamp" style="display:none">
-  <div class="modal-box modal-stamp">
-    <h3>🔖 Insertar Sello</h3>
-    <div class="stamp-grid">
-      <button class="stamp-opt s-approved"  data-stamp="APROBADO"    data-color="#16a34a">✅ APROBADO</button>
-      <button class="stamp-opt s-rejected"  data-stamp="RECHAZADO"   data-color="#dc2626">❌ RECHAZADO</button>
-      <button class="stamp-opt s-review"    data-stamp="EN REVISIÓN" data-color="#d97706">🔍 EN REVISIÓN</button>
-      <button class="stamp-opt s-info"      data-stamp="INFORMACIÓN" data-color="#2563eb">ℹ INFORMACIÓN</button>
-      <button class="stamp-opt s-warning"   data-stamp="PRECAUCIÓN"  data-color="#b45309">⚠ PRECAUCIÓN</button>
-      <button class="stamp-opt s-draft"     data-stamp="BORRADOR"    data-color="#6b7280">📝 BORRADOR</button>
-      <button class="stamp-opt s-nci"       data-stamp="NCI"         data-color="#7c3aed">🔴 NCI</button>
-      <button class="stamp-opt s-rfi"       data-stamp="RFI"         data-color="#0891b2">📋 RFI</button>
-    </div>
-    <!-- ── Etiquetas de estado (borde doble) ── -->
-    <div class="stamp-section-title">Etiquetas de estado</div>
-    <div class="stamp-grid label-grid">
-      <button class="stamp-label" data-stamp="ORIGINAL"   data-color="#3b82f6" data-style="label">ORIGINAL</button>
-      <button class="stamp-label" data-stamp="RECEIVED"   data-color="#22c55e" data-style="label">RECEIVED</button>
-      <button class="stamp-label" data-stamp="ISSUED"     data-color="#06b6d4" data-style="label">ISSUED</button>
-      <button class="stamp-label" data-stamp="FINAL"      data-color="#8b5cf6" data-style="label">FINAL</button>
-      <button class="stamp-label" data-stamp="FOR REVIEW" data-color="#f59e0b" data-style="label">FOR REVIEW</button>
-      <button class="stamp-label" data-stamp="SUPERSEDED" data-color="#64748b" data-style="label">SUPERSEDED</button>
-      <button class="stamp-label" data-stamp="PAST DUE"   data-color="#ef4444" data-style="hatch">PAST DUE</button>
-      <button class="stamp-label" data-stamp="VOID"       data-color="#6b7280" data-style="hatch">VOID</button>
-      <button class="stamp-label" data-stamp="CANCELLED"  data-color="#dc2626" data-style="hatch">CANCELLED</button>
-      <button class="stamp-label" data-stamp="REJECTED"   data-color="#b45309" data-style="hatch">REJECTED</button>
-    </div>
-
-    <div class="modal-actions">
-      <button class="tb-btn" id="btn-stamp-cancel">Cancelar</button>
-    </div>
-  </div>
-</div>
-
-<!-- Tooltip flotante: autor de la anotación -->
-<div id="annot-tooltip" class="annot-tooltip"></div>
-
-<!-- Lightbox para ver imágenes adjuntas -->
-<div id="att-lightbox" class="att-lightbox" style="display:none">
-  <img id="att-lightbox-img" alt="Adjunto">
-</div>
-
-<!-- Selector de plano destino para el hipervínculo -->
-<div class="modal-overlay" id="modal-plano" style="display:none">
-  <div class="modal-card plano-pick-card">
-    <div class="modal-head">
-      <span>🔗 Elegir plano destino</span>
-    </div>
-    <input type="text" id="plano-search" class="plano-search" placeholder="Buscar por número, descripción…" autocomplete="off">
-    <div class="plano-list" id="plano-list">
-      <div class="plano-empty">Cargando planos…</div>
-    </div>
-    <div class="modal-actions">
-      <button class="tb-btn" id="btn-plano-close">Cancelar</button>
-    </div>
-  </div>
-</div>
-
-<!-- Modal de confirmación (acciones destructivas) -->
-<div class="modal-overlay" id="modal-confirm" style="display:none">
-  <div class="modal-card confirm-card">
-    <div class="confirm-icon"><i data-lucide="alert-triangle"></i></div>
-    <div class="confirm-title" id="confirm-title">¿Confirmar?</div>
-    <div class="confirm-msg" id="confirm-msg"></div>
-    <div class="confirm-actions">
-      <button class="confirm-btn confirm-cancel" id="confirm-cancel">Cancelar</button>
-      <button class="confirm-btn confirm-ok confirm-danger" id="confirm-ok">Aceptar</button>
-    </div>
-  </div>
-</div>
-
-<!-- Selector de RFI para el sello RFI (mismo estilo) -->
-<div class="modal-overlay" id="modal-rfi" style="display:none">
-  <div class="modal-card plano-pick-card">
-    <div class="modal-head">
-      <span>📋 Elegir RFI</span>
-    </div>
-    <input type="text" id="rfi-search" class="plano-search" placeholder="Buscar RFI…" autocomplete="off">
-    <div class="plano-list" id="rfi-list">
-      <div class="plano-empty">Cargando RFIs…</div>
-    </div>
-    <div class="modal-actions">
-      <button class="tb-btn" id="btn-rfi-close">Cancelar</button>
-    </div>
-  </div>
-</div>
-
-<!-- Mini-toolbar flotante sobre la figura seleccionada -->
-<div id="fig-toolbar" class="fig-toolbar" style="display:none">
-  <button id="fig-toggle-att" title="Mostrar / ocultar el adjunto en el plano"></button>
-  <button id="fig-enlarge-att" title="Ampliar imagen"><i data-lucide="maximize"></i></button>
-</div>
-
-<!-- ══════════════════ PANEL: Propiedades de anotación ══════════════════ -->
-<div id="annot-panel" class="annot-panel" style="display:none">
-
-  <!-- Cabecera -->
-  <div class="ap-header">
-    <span class="ap-title">📋 Propiedades</span>
-    <button class="ap-close" id="btn-ap-close" title="Cerrar panel"><i data-lucide="x"></i></button>
-  </div>
-
-  <!-- Identidad (readonly) -->
-  <div class="ap-identity">
-    <span class="ap-id-dot" id="ap-id-dot"></span>
-    <div class="ap-id-info">
-      <span class="ap-id-autor" id="ap-id-autor">—</span>
-      <span class="ap-id-meta"  id="ap-id-meta">—</span>
-    </div>
-  </div>
-
-  <!-- Aviso de solo lectura (figura de otro usuario) -->
-  <div class="ap-readonly-banner" id="ap-readonly-banner" style="display:none">
-    <i data-lucide="lock"></i> Figura de otro usuario — solo lectura
-  </div>
-
-  <!-- Cuerpo con scroll -->
-  <div class="ap-body">
-
-    <!-- ── Hipervínculo (solo para enlaces) ── -->
-    <div class="ap-section" id="ap-link-section" style="display:none">
-      <div class="ap-section-label">Hipervínculo</div>
-
-      <!-- Enlace a OTRO plano (lo elige APEX desde su listado) -->
-      <div class="ap-field">
-        <label>Plano destino</label>
-        <div class="ap-link-target">
-          <span id="ap-link-target-name" class="ap-link-target-name">— sin destino —</span>
-          <button class="ap-att-add" id="btn-ap-pick-plano"><i data-lucide="link"></i> Elegir plano…</button>
-          <button class="ap-link-clear" id="btn-ap-clear-plano" title="Quitar destino">✕</button>
+      <!-- ── Apariencia ── -->
+      <div class="ap-section" id="ap-appearance-section">
+        <div class="ap-section-label">Apariencia</div>
+        <div class="ap-style-row">
+          <label class="ap-style-color">Trazo<input type="color" id="ap-stroke"></label>
+          <label class="ap-style-color">Relleno<input type="color" id="ap-fill"></label>
+        </div>
+        <div class="ap-field" id="ap-field-stroke-w">
+          <label>Grosor de línea · <span id="ap-stroke-w-val">2</span> px</label>
+          <input type="range" id="ap-stroke-w" min="1" max="12" step="1" value="2">
+        </div>
+        <div class="ap-field" id="ap-field-font-size" style="display:none">
+          <label>Tamaño de texto · <span id="ap-font-size-val">16</span> px</label>
+          <input type="range" id="ap-font-size" min="8" max="72" step="1" value="16">
+        </div>
+        <div class="ap-field">
+          <label>Opacidad · <span id="ap-opacity-val">100</span>%</label>
+          <input type="range" id="ap-opacity" min="10" max="100" step="5" value="100">
         </div>
       </div>
 
-      <div class="ap-link-hint">Doble clic en el enlace para abrir el plano destino.</div>
-    </div>
-
-    <!-- ── RFI (solo para el sello RFI) ── -->
-    <div class="ap-section" id="ap-rfi-section" style="display:none">
-      <div class="ap-section-label">RFI vinculado</div>
-      <div class="ap-field">
-        <label>RFI</label>
-        <div class="ap-link-target">
-          <span id="ap-rfi-name" class="ap-link-target-name">— sin RFI —</span>
-          <button class="ap-att-add" id="btn-ap-pick-rfi"><i data-lucide="file-text"></i> Elegir RFI…</button>
-          <button class="ap-link-clear" id="btn-ap-clear-rfi" title="Quitar RFI">✕</button>
-        </div>
+      <!-- ── Descripción ── -->
+      <div class="ap-section">
+        <div class="ap-section-label">Descripción / Nota</div>
+        <textarea id="ap-desc" class="ap-textarea" rows="4" placeholder="Descripción de la observación…"
+          maxlength="1000"></textarea>
+        <div class="ap-char-count"><span id="ap-desc-count">0</span> / 1000</div>
       </div>
-      <div class="ap-link-hint">Al elegir un RFI se abre su detalle. Doble clic en el sello también lo abre.</div>
-    </div>
 
-    <!-- ── Adjuntos (fotos / archivos) — solo para el pin de cámara ── -->
-    <div class="ap-section" id="ap-att-section" style="display:none">
-      <div class="ap-section-label">Adjuntos <span id="ap-att-count" class="ap-att-count"></span></div>
-      <button class="ap-att-add" id="btn-ap-attach"><i data-lucide="paperclip"></i> Adjuntar foto o archivo</button>
-      <input type="file" id="ap-att-input" multiple
-             accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" hidden>
-      <div class="ap-att-grid" id="ap-att-grid"></div>
-    </div>
+    </div><!-- .ap-body -->
 
-    <!-- ── Texto en la figura ── -->
-    <div class="ap-section" id="ap-text-section">
-      <div class="ap-section-label">Texto en la figura</div>
-      <div class="ap-field">
-        <input type="text" id="ap-label" placeholder="Escribe una etiqueta…  (o doble clic en la figura)" maxlength="120">
-      </div>
-    </div>
+  </div><!-- #annot-panel -->
 
-    <!-- ── Apariencia ── -->
-    <div class="ap-section" id="ap-appearance-section">
-      <div class="ap-section-label">Apariencia</div>
-      <div class="ap-style-row">
-        <label class="ap-style-color">Trazo<input type="color" id="ap-stroke"></label>
-        <label class="ap-style-color">Relleno<input type="color" id="ap-fill"></label>
-      </div>
-      <div class="ap-field">
-        <label>Grosor de línea · <span id="ap-stroke-w-val">2</span> px</label>
-        <input type="range" id="ap-stroke-w" min="1" max="12" step="1" value="2">
-      </div>
-      <div class="ap-field">
-        <label>Opacidad · <span id="ap-opacity-val">100</span>%</label>
-        <input type="range" id="ap-opacity" min="10" max="100" step="5" value="100">
-      </div>
-    </div>
-
-    <!-- ── Descripción ── -->
-    <div class="ap-section">
-      <div class="ap-section-label">Descripción / Nota</div>
-      <textarea id="ap-desc" class="ap-textarea" rows="4"
-                placeholder="Descripción de la observación…" maxlength="1000"></textarea>
-      <div class="ap-char-count"><span id="ap-desc-count">0</span> / 1000</div>
-    </div>
-
-  </div><!-- .ap-body -->
-
-</div><!-- #annot-panel -->
-
-<!-- Bundle ESM + TypeScript (fabric y pdf.js incluidos vía npm) -->
-<script type="module" src="/src/main.ts"></script>
+  <!-- Bundle ESM + TypeScript (fabric y pdf.js incluidos vía npm) -->
+  <script type="module" src="/src/main.ts"></script>
 </body>
+
 </html>
