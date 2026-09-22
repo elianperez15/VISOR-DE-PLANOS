@@ -2,7 +2,7 @@
 #
 # deploy.sh — Despliega el visor de planos a un entorno concreto.
 #
-#   Uso:   bash scripts/deploy.sh dev     # rama develop → planos-dev.aicsacorp.com
+#   Uso:   bash scripts/deploy.sh dev     # rama develop → planos.aicsacorp.com:8443
 #          bash scripts/deploy.sh prod    # rama main    → planos.aicsacorp.com
 #
 # Pasos:
@@ -12,8 +12,8 @@
 #   4. Copia el microservicio de colaboración y reinicia su servicio systemd
 #   5. Verifica el health del microservicio
 #
-# Ambos entornos viven en el MISMO servidor, separados por carpeta + vhost +
-# servicio systemd + puerto. Ver docs/ENTORNOS.md.
+# Ambos entornos viven en el MISMO servidor y bajo el MISMO nombre DNS,
+# separados por puerto + carpeta + vhost + servicio systemd. Ver docs/ENTORNOS.md.
 #
 set -euo pipefail
 
@@ -27,7 +27,7 @@ DEV_SERVICE="saf-collab-dev"
 DEV_PORT=3101
 DEV_BUILD="npm run build:dev"
 DEV_BRANCH="develop"
-DEV_URL="https://planos-dev.aicsacorp.com"
+DEV_URL="https://planos.aicsacorp.com:8443"   # mismo DNS que prod, otro puerto
 
 # --- PRODUCCIÓN ---
 PROD_WEB_ROOT="/usr/share/nginx/html/planos"

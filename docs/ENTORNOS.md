@@ -1,20 +1,51 @@
 # Entornos: desarrollo y producción
 
-Dos entornos sobre **el mismo servidor** (`192.168.50.163`), separados en cuatro
-planos: rama de git, modo de build, carpeta+vhost de nginx y servicio systemd.
+Dos entornos sobre **el mismo servidor** (`192.168.50.163`) y, por ahora, bajo
+**el mismo nombre DNS**. Se separan en cinco planos: rama de git, modo de build,
+puerto+vhost de nginx, carpeta y servicio systemd.
 
 |                     | Desarrollo                        | Producción                    |
 |---------------------|-----------------------------------|-------------------------------|
 | Rama de git         | `develop`                         | `main`                        |
 | Archivo de entorno  | `.env.development`                | `.env.production`             |
 | Build               | `npm run build:dev`               | `npm run build:prod`          |
-| Despliegue          | `bash scripts/deploy.sh dev`      | `bash scripts/deploy.sh prod` |
-| URL                 | `planos-dev.aicsacorp.com`        | `planos.aicsacorp.com`        |
+| Despliegue          | `npm run deploy:dev`              | `npm run deploy:prod`         |
+| URL                 | `planos.aicsacorp.com:8443`       | `planos.aicsacorp.com`        |
+| Puerto nginx        | `8443`                            | `443` (`default_server`)      |
 | Web root (nginx)    | `/usr/share/nginx/html/planos-dev`| `/usr/share/nginx/html/planos`|
 | vhost               | `server/nginx-dev.conf`           | `server/nginx-prod.conf`      |
 | ORDS (proxy nginx)  | `dev.aicsacorp.com`               | `prod.aicsacorp.com`          |
 | Servicio colab.     | `saf-collab-dev` (puerto 3101)    | `saf-collab` (puerto 3100)    |
 | Origen APEX         | `dev.aicsacorp.com`               | `saf.aicsacorp.com`           |
+
+## Por qué los separa el puerto y no el nombre
+
+nginx elige el vhost comparando el header `Host` contra `server_name`. **Dos
+`server {}` con el mismo `server_name` en el mismo `listen` son un conflicto**:
+nginx arranca igual, avisa `conflicting server name "..." ignored` y sirve
+siempre el primero que carga (`conf.d/*.conf` se lee en orden alfabético, así
+que ganaría `default.conf` y el vhost de dev quedaría muerto **sin que nada
+falle de forma visible**).
+
+Con puertos distintos son sockets distintos y no hay ambigüedad posible.
+
+Esto no obliga a tocar el frontend: el visor usa rutas relativas (`/ords/safws`)
+y `window.location.origin` para el WebSocket, y **el origin incluye el puerto**.
+Desde `https://planos.aicsacorp.com:8443`, `/ords/` y `/rt/ws` resuelven solos
+contra `:8443`. El código es idéntico en ambos entornos.
+
+### Cuando tengas DNS propio para dev
+
+Migrar es un cambio de dos líneas en `server/nginx-dev.conf`:
+
+```nginx
+listen 443 ssl;                          # en vez de 8443
+server_name planos-dev.aicsacorp.com;    # en vez de planos.aicsacorp.com
+```
+
+Más `COLLAB_ORIGINS=https://planos-dev.aicsacorp.com` (sin puerto) en
+`saf-collab-dev.service` y `DEV_URL` en `scripts/deploy.sh`. El certificado
+wildcard `*.aicsacorp.com` ya cubre ese nombre.
 
 ## Principio de diseño
 
@@ -43,7 +74,7 @@ git push origin develop
 bash scripts/deploy.sh dev        # compila en modo development y sube a dev
 ```
 
-Verificas en `https://planos-dev.aicsacorp.com`. Si algo falla, repites el ciclo:
+Verificas en `https://planos.aicsacorp.com:8443`. Si algo falla, repites el ciclo:
 producción **no se entera de nada**, porque vive en otra carpeta y otro vhost.
 
 ### 2. Promover a producción
@@ -122,9 +153,17 @@ sudo chown -R planos:planos /var/www/saf/planos-dev
 ```
 
 ```bash
-# 2. DNS: planos-dev.aicsacorp.com → 192.168.50.163
-#    (el certificado wildcard *.aicsacorp.com ya lo cubre)
+# 2. Abrir el puerto 8443 en el firewall del servidor
+sudo firewall-cmd --permanent --add-port=8443/tcp
+sudo firewall-cmd --reload
 ```
+
+No hace falta DNS nuevo: dev reutiliza `planos.aicsacorp.com` en el puerto 8443,
+y el certificado wildcard ya lo cubre porque es el mismo nombre.
+
+Si el tráfico pasa por el **proxy de Cloudflare** (nube naranja), 8443 está en la
+lista de puertos HTTPS que Cloudflare sí proxea (443, 2053, 2083, 2087, 2096,
+8443). Si el acceso es interno o la nube está en gris, no hay nada que revisar.
 
 Desde tu Mac, copia las configuraciones y actívalas:
 
@@ -147,8 +186,8 @@ ssh adminsafvsp@192.168.50.163 '
 Y ya puedes desplegar los dos entornos:
 
 ```bash
-git checkout develop && bash scripts/deploy.sh dev
-git checkout main    && bash scripts/deploy.sh prod
+git checkout develop && npm run deploy:dev    # → https://planos.aicsacorp.com:8443
+git checkout main    && npm run deploy:prod   # → https://planos.aicsacorp.com
 ```
 
 ### Antes de recargar nginx, verifica
@@ -160,6 +199,8 @@ git checkout main    && bash scripts/deploy.sh prod
 2. **El nombre de host de producción.** El vhost pasó de `server_name _` a
    `server_name planos.aicsacorp.com`, conservando `default_server` para que las
    peticiones por IP sigan cayendo ahí.
+3. **Que `nginx -t` no reporte `conflicting server name`.** Si aparece, es que
+   los dos vhosts acabaron en el mismo puerto: revisa que dev tenga `listen 8443`.
 
 ---
 

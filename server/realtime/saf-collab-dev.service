@@ -24,7 +24,8 @@ RestartSec=3
 # ── Variables de entorno del entorno DEV ────────────────────────────────
 # Puerto 3101 para no chocar con producción (3100).
 Environment=COLLAB_PORT=3101
-Environment=COLLAB_ORIGINS=https://planos-dev.aicsacorp.com
+# El origen INCLUYE el puerto: dev se sirve en :8443 (prod en :443).
+Environment=COLLAB_ORIGINS=https://planos.aicsacorp.com:8443
 
 # Endurecimiento básico
 User=planos
