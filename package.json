@@ -7,12 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:dev": "vite build --mode development",
-    "build:prod": "vite build --mode production",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "deploy:dev": "bash scripts/deploy.sh dev",
-    "deploy:prod": "bash scripts/deploy.sh prod"
+    "deploy": "bash scripts/deploy.sh"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

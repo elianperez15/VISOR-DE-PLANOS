@@ -18,10 +18,8 @@
       <!-- Marcas: mostrar/ocultar + visibilidad por colaborador -->
 
       <!-- Inputs ocultos -->
-      <input type="file" id="file-input" accept=".pdf" hidden>
       <input type="file" id="session-input" accept=".json" hidden>
       <input type="file" id="xfdf-input" accept=".xfdf,.xml" hidden>
-      <input type="file" id="compare-file-input" accept=".pdf,application/pdf" hidden>
 
       <div class="tb-dropdown-wrap" id="markup-wrap">
         <button class="tb-btn tb-dropdown-btn tb-btn-active" id="btn-markup-menu"
@@ -281,25 +279,19 @@
       <!-- ══════════════════ LIENZO ══════════════════ -->
       <div class="saf-canvas" id="canvas-area">
 
-        <!-- Pantalla vacía — arranca OCULTA: sólo se muestra si no se carga
-             ningún plano (ver showEmptyState/scheduleEmptyState en main.ts) -->
-        <div class="empty-state" id="empty-state" style="display:none">
-          <div class="empty-box">
-            <div class="empty-icon"><i data-lucide="ruler"></i></div>
-            <h2>Visor de Planos Univera</h2>
-            <p>Abre un PDF para agregar anotaciones · Guarda como <strong>.xfdf</strong> portable o
-              <strong>.json</strong> interno
-            </p>
-            <button class="btn-open-large" id="btn-open-large"><i data-lucide="folder-open"></i> Abrir PDF</button>
-            <div class="empty-tools">
-              <span><i data-lucide="cloud"></i> Nubes de revisión</span>
-              <span><i data-lucide="ruler"></i> Cotas con escala</span>
-              <span><i data-lucide="triangle"></i> Ángulos</span>
-              <span><i data-lucide="hexagon"></i> Áreas y perímetros</span>
-              <span><i data-lucide="message-square"></i> Callouts</span>
-              <span><i data-lucide="stamp"></i> Sellos APROBADO/RFI</span>
-              <span><i data-lucide="file-text"></i> Export XFDF portable</span>
-            </div>
+        <!-- Aviso cuando no hay nada que mostrar (arranca OCULTO). El visor sólo
+             abre planos del file server, así que si no llega ninguno hay que
+             decir por qué — ver showViewerNotice() en main.ts -->
+        <div class="viewer-notice" id="viewer-notice" style="display:none">
+          <div class="viewer-notice-box">
+            <div class="viewer-notice-icon"><i data-lucide="alert-circle"></i></div>
+            <h2 id="viewer-notice-title">No se pudo cargar el archivo para su visualización</h2>
+            <p class="viewer-notice-detail" id="viewer-notice-detail"></p>
+            <!-- Volcado técnico: replegado, para quien tenga que diagnosticar -->
+            <details class="viewer-notice-tech" id="viewer-notice-tech" hidden>
+              <summary>Detalles técnicos</summary>
+              <pre id="viewer-notice-tech-text"></pre>
+            </details>
           </div>
         </div>
 
@@ -590,14 +582,6 @@
       <div class="modal-head">
         <span><i data-lucide="compare"></i> Comparar con otra revisión</span>
       </div>
-      <!-- Comparar contra un PDF del equipo del usuario (clic o arrastrar) -->
-      <button class="cmp-drop" id="cmp-drop" type="button">
-        <i data-lucide="upload"></i>
-        <span><b>Subir un PDF de mi equipo</b><small>Haz clic para elegir el archivo o arrástralo aquí</small></span>
-      </button>
-
-      <div class="cmp-or"><span>o elige un plano del repositorio</span></div>
-
       <input type="text" id="compare-search" class="plano-search" placeholder="Buscar plano…" autocomplete="off">
       <div class="plano-list" id="compare-list">
         <div class="plano-empty">Cargando planos…</div>

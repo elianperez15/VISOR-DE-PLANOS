@@ -95,11 +95,8 @@ import { createListPicker } from './features/list-picker';
   /* ── Refs DOM ─────────────────────────────────────────────────────── */
   const $ = id => document.getElementById(id);
   const ui = {
-    fileInput    : $('file-input'),
     sessionInput : $('session-input'),
     xfdfInput    : $('xfdf-input'),
-    btnOpen      : $('btn-open'),
-    btnOpenLarge : $('btn-open-large'),
     btnSave      : $('btn-save'),
     btnLoad      : $('btn-load'),
     btnXfdfSave  : $('btn-xfdf-save'),
@@ -123,7 +120,6 @@ import { createListPicker } from './features/list-picker';
     fillAlphaVal : $('fill-alpha-val'),
     strokeWidth  : $('stroke-width'),
     fontSize     : $('font-size'),
-    emptyState   : $('empty-state'),
     canvasWrapper: $('canvas-wrapper'),
     drawHint     : $('draw-hint'),
     saveToast    : $('save-toast'),
@@ -168,28 +164,64 @@ import { createListPicker } from './features/list-picker';
     annotTooltip : $('annot-tooltip'),
     planoLoader     : $('plano-loader'),
     planoLoaderText : $('plano-loader-text'),
+    notice       : $('viewer-notice'),
+    noticeTitle  : $('viewer-notice-title'),
+    noticeDetail : $('viewer-notice-detail'),
+    noticeTech   : $('viewer-notice-tech'),
+    noticeTechTxt: $('viewer-notice-tech-text'),
   };
 
-  /* ── Modo embebido (APEX): se abre un plano por parámetro → sin "Abrir PDF" ── */
-  let isEmbeddedMode = false;
-  let emptyStateTimer = null;   // espera antes de dar por hecho que no vendrá plano
+  let noticeTimer = null;   // espera antes de dar por hecho que no vendrá plano
 
-  /** Muestra/oculta la pantalla vacía (título + "Abrir PDF"). */
-  function showEmptyState(on) {
-    if (ui.emptyState) ui.emptyState.style.display = on ? 'flex' : 'none';
+  const NOTICE_DEFAULT = 'No se pudo cargar el archivo para su visualización';
+
+  /**
+   * Muestra el aviso que ocupa el lienzo cuando no hay nada que enseñar.
+   * El visor sólo abre planos del file server, así que cuando no aparece ninguno
+   * hay que decir por qué.
+   *
+   * `reason` es la frase para el usuario; `technical` el volcado de diagnóstico,
+   * que va replegado. Separarlos importa: el diagnóstico de PDFRenderer llega a
+   * incluir el HTML que devolvió el servidor, y eso en pantalla no es un
+   * mensaje, es ruido.
+   */
+  function showViewerNotice(reason, technical) {
+    clearTimeout(noticeTimer);
+    if (!ui.notice) return;
+    if (ui.noticeTitle)  ui.noticeTitle.textContent  = NOTICE_DEFAULT;
+    if (ui.noticeDetail) ui.noticeDetail.textContent = reason || '';
+    if (ui.noticeTech) {
+      const hay = !!technical;
+      ui.noticeTech.hidden = !hay;
+      ui.noticeTech.open   = false;   // siempre plegado al aparecer
+      if (hay && ui.noticeTechTxt) ui.noticeTechTxt.textContent = technical;
+    }
+    ui.notice.style.display = 'flex';
+  }
+
+  /** Traduce el error de carga a (motivo legible, detalle técnico). */
+  function noticeFromError(e) {
+    const reason = e && e.pista
+      ? e.pista
+      : 'El documento no se pudo abrir. Vuelve a intentarlo en unos minutos.';
+    return [reason, (e && (e.tecnico || e.message)) || ''];
+  }
+
+  function hideViewerNotice() {
+    clearTimeout(noticeTimer);
+    if (ui.notice) ui.notice.style.display = 'none';
   }
 
   /**
-   * Decide si la pantalla vacía debe aparecer. Sólo tiene sentido cuando NO hay
-   * ni se espera un plano: en modo embebido la petición llega por postMessage
-   * (openPDF/init) un instante después de cargar, así que se da un margen antes
-   * de mostrarla y no ver el cartel parpadear encima del plano que va a abrirse.
+   * Da un margen antes de avisar de que no hay plano: embebido en APEX, la
+   * petición llega por postMessage un instante después de cargar, y el aviso no
+   * debe parpadear encima del plano que está a punto de abrirse.
    */
-  function scheduleEmptyState() {
-    if (window.parent === window) { showEmptyState(true); return; }   // standalone: hay que abrirlo a mano
-    clearTimeout(emptyStateTimer);
-    emptyStateTimer = setTimeout(() => {
-      if (!isEmbeddedMode && !pdfRenderer.isLoaded) showEmptyState(true);
+  function scheduleViewerNotice(reason) {
+    if (window.parent === window) { showViewerNotice(reason); return; }
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      if (!pdfRenderer.isLoaded) showViewerNotice(reason);
     }, 2500);
   }
 
@@ -201,14 +233,6 @@ import { createListPicker } from './features/list-picker';
   }
   function hidePlanoLoader() {
     if (ui.planoLoader) ui.planoLoader.style.display = 'none';
-  }
-
-  /** Oculta las opciones de abrir un PDF local (modo embebido en APEX). */
-  function disableOpenControls() {
-    isEmbeddedMode = true;
-    clearTimeout(emptyStateTimer);   // ya viene un plano: la pantalla vacía sobra
-    showEmptyState(false);
-    [ui.btnOpen, ui.btnOpenLarge].forEach(b => { if (b) b.style.display = 'none'; });
   }
 
   /* ── RFI: selector (modal) + drawer en APEX ────────────────────────── */
@@ -459,32 +483,6 @@ import { createListPicker } from './features/list-picker';
   /* ════════════════════════════════════════════════════════════════════
      PDF
      ════════════════════════════════════════════════════════════════════ */
-  async function openPDF(file) {
-    setStatus('Cargando PDF…');
-    try {
-      const { numPages } = await pdfRenderer.load(file);
-      totalPages = numPages;
-      session.docId       = null;          // archivo local → sin sala de colaboración
-      session.docName     = file.name;
-      session.pages       = {};
-      session.pageHeights = {};
-      rotation            = 0;             // cada documento arranca sin rotar
-      session.rotation    = 0;             // (se restaura desde el servidor si existe)
-      collabSync.reset();
-      showEmptyState(false);
-      ui.canvasWrapper.style.display = 'flex';
-      compare.close();   // la Rev B anterior ya no corresponde al nuevo documento
-      initMarkup();
-      enableDocs(true);
-      await goToPage(1);
-      setStatus('');
-    } catch (e) {
-      setStatus('Error: ' + e.message);
-      if (!pdfRenderer.isLoaded) showEmptyState(true);   // sin plano → volver a la pantalla vacía
-      alert('No se pudo cargar el PDF:\n' + e.message);
-    }
-  }
-
   /**
    * Abre un PDF desde una URL (p.ej. /pdfs/plano-123.pdf servido por Nginx).
    * Usado por la integración con APEX vía postMessage { action:'openPDF' }
@@ -505,7 +503,7 @@ import { createListPicker } from './features/list-picker';
       rotation            = 0;             // cada documento arranca sin rotar
       session.rotation    = 0;             // (se restaura desde el servidor si existe)
       collabSync.reset();
-      showEmptyState(false);
+      hideViewerNotice();
       ui.canvasWrapper.style.display = 'flex';
       compare.close();
       initMarkup();
@@ -517,9 +515,14 @@ import { createListPicker } from './features/list-picker';
       collabSync.loadFromServer();
       setStatus('');
     } catch (e) {
-      setStatus('Error: ' + e.message);
-      if (!pdfRenderer.isLoaded) showEmptyState(true);   // sin plano → volver a la pantalla vacía
-      alert('No se pudo cargar el PDF desde la URL:\n' + e.message);
+      console.error('Abrir plano:', e);   // el diagnóstico completo, para soporte
+      const [motivo, tecnico] = noticeFromError(e);
+      // `e.message` lleva el diagnóstico entero: en la barra de estado sólo cabe
+      // —y sólo sirve— la frase legible.
+      setStatus('Error: ' + motivo);
+      // Embebido en APEX un alert() es intrusivo y deja el lienzo en blanco:
+      // el motivo se explica en el propio lienzo.
+      showViewerNotice(motivo, tecnico);
     } finally {
       hidePlanoLoader();
     }
@@ -581,10 +584,10 @@ import { createListPicker } from './features/list-picker';
     getCurrentPage   : () => currentPage,
     getTotalPages    : () => totalPages,
     pdfRenderer,
+    getRotation      : () => rotation,   // el overlay debe rasterizarse con el mismo giro
     setStatus        : (m) => setStatus(m),
     updateScaleBadge : () => updateScaleBadge(),
     onPickRevision   : () => comparePicker.open({}),   // elegir la revisión desde la BD (target placeholder)
-    closeRevisionPicker: () => comparePicker.dismiss(), // al comparar con un PDF del equipo
     showHint         : (m, p) => showHint(m, p),
     downloadImage    : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
     startRegionSnapshot : (baseName) => regionSnapshot.start(baseName),
@@ -1125,8 +1128,6 @@ import { createListPicker } from './features/list-picker';
   initRailDrag();
 
   // 2. PDF (abrir local solo desde la pantalla vacía; en modo embebido se oculta)
-  [ui.btnOpen, ui.btnOpenLarge].forEach(b => b && b.addEventListener('click', () => ui.fileInput.click()));
-  ui.fileInput && ui.fileInput.addEventListener('change', e => { if(e.target.files[0]) openPDF(e.target.files[0]); e.target.value=''; });
 
   // 3. Descargar documento (PDF + marcas si están visibles)
   // El botón abre el submenú (lo gestiona dropdowns.ts); descargan sus dos ítems
@@ -1261,7 +1262,8 @@ import { createListPicker } from './features/list-picker';
       onConfirm: () => {
         markup.clearMyMarkup();                 // borra solo lo del usuario actual
         session.pages[currentPage] = markup.getMarkupJSON();
-        collabSync.pushLocalLayer();            // sincroniza/persiste el borrado
+        collabSync.pushLocalLayer();            // sincroniza en vivo; NO persiste:
+                                                // el borrado se guarda al pulsar «Guardar»
         ui.areaPanel.style.display = 'none';
         showHint('Tus marcas de esta página fueron eliminadas');
       },
@@ -1753,7 +1755,7 @@ import { createListPicker } from './features/list-picker';
     }
     // Abrir plano: por id de repositorio (vía API APEX) o por URL directa
     if (e.data.action === 'openPDF') {
-      disableOpenControls();   // APEX abre el plano → modo embebido sin "Abrir PDF"
+      hideViewerNotice();   // llega un plano: el aviso de "nada que mostrar" sobra
       if (e.data.repoId != null) openPDFFromRepo(e.data.repoId, e.data.name);
       else if (e.data.pdfUrl)    openPDFFromUrl(e.data.pdfUrl, e.data.docId, e.data.name);
     }
@@ -1773,7 +1775,7 @@ import { createListPicker } from './features/list-picker';
       if (rid != null && /^\d+$/.test(String(rid))) _currentRevId = Number(rid);
       // Abrir el plano (por id de repositorio o URL directa)
       if (d.repoId != null || d.pdfUrl) {
-        disableOpenControls();
+        hideViewerNotice();
         if (d.repoId != null) openPDFFromRepo(d.repoId, d.nombre || d.name);
         else                  openPDFFromUrl(d.pdfUrl, d.docId, d.nombre || d.name);
       }
@@ -1837,14 +1839,13 @@ import { createListPicker } from './features/list-picker';
     const repoId   = params.get('repoId') || params.get('id_en_repositorio');
     const pdfParam = params.get('pdf');
     if (repoId || pdfParam) {
-      // Hay una petición de plano → modo embebido: sin opción de abrir PDF local
-      disableOpenControls();
       if (repoId)   openPDFFromRepo(repoId, params.get('nombre'));
       else          openPDFFromUrl(pdfParam, params.get('docId'), params.get('nombre'));
     } else {
-      // Nadie pidió un plano por la URL: mostrar la pantalla vacía (embebido,
-      // se espera un momento por si APEX lo pide por postMessage)
-      scheduleEmptyState();
+      // Nadie ha pedido un plano. Embebido aún puede llegar por postMessage, así
+      // que el aviso espera un momento antes de aparecer.
+      scheduleViewerNotice('El visor no recibió ningún plano que mostrar. '
+        + 'Ábrelo desde el listado de planos del sistema.');
     }
   })();
 
@@ -1857,7 +1858,7 @@ import { createListPicker } from './features/list-picker';
     if (e.ctrlKey||e.metaKey) {
       const map = {
         z:()=>markup&&markup.undo(), y:()=>markup&&markup.redo(),
-        o:()=>ui.fileInput.click(), s:()=>saveSession(),
+        s:()=>saveSession(),
         '=':()=>markup&&markup.zoomStep(1), '+':()=>markup&&markup.zoomStep(1),
         '-':()=>markup&&markup.zoomStep(-1),
         '0':()=>markup&&markup.fitToCanvas(),   // Ctrl/Cmd+0 → ajustar a pantalla

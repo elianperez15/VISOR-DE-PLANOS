@@ -19,7 +19,7 @@ ORIGEN="${3:-https://planos.aicsacorp.com}"
 
 [ -n "${ID}" ] || { echo "✗ Falta el ID_EN_REPOSITORIO."; echo "  Uso: bash scripts/diag-ords.sh <id> [nombre] [origen]"; exit 2; }
 
-URL="${ORIGEN}/ords/safws/Reportes/planos-hub/documento"
+URL="${ORIGEN}/ords/safws/planos-hub/documento"
 OUT="$(mktemp)"
 HDR="$(mktemp)"
 trap 'rm -f "${OUT}" "${HDR}"' EXIT

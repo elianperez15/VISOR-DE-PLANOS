@@ -1,5 +1,4 @@
-# Servicio systemd para el WebSocket de colaboración — entorno PRODUCCIÓN.
-# El gemelo de desarrollo es saf-collab-dev.service (puerto 3101).
+# Servicio systemd para el WebSocket de colaboración del Visor de Planos.
 # Instalar:
 #   sudo cp server/realtime/saf-collab.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -8,7 +7,7 @@
 #   systemctl status saf-collab
 #   journalctl -u saf-collab -f
 [Unit]
-Description=SAF Planos (PROD) — WebSocket de colaboración en tiempo real
+Description=SAF Planos — WebSocket de colaboración en tiempo real
 After=network-online.target
 Wants=network-online.target
 
@@ -20,8 +19,7 @@ ExecStart=/usr/bin/node collab-server.js
 Restart=always
 RestartSec=3
 
-# ── Variables de entorno del entorno PROD ───────────────────────────────
-# Puerto 3100 (dev usa 3101).
+# ── Variables de entorno (COLLAB_ORIGINS incluido) ──────────────────────
 Environment=COLLAB_PORT=3100
 Environment=COLLAB_ORIGINS=https://planos.aicsacorp.com
 

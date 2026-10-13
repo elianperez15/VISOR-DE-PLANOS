@@ -6,7 +6,7 @@
    visor (main.ts) decide qué hacer con cada evento. No persiste nada — la
    durabilidad es por ORDS.
    ────────────────────────────────────────────────────────────────────── */
-import { COLLAB_URL, COLLAB_PATH } from '../config';
+import { COLLAB_URL, COLLAB_PATH, COLLAB_ENABLED } from '../config';
 
 export type Peer = { id: string; user: string; color: string };
 
@@ -39,6 +39,11 @@ type Callbacks = {
   onScale?:      (scale: any) => void;   // escala calibrada global
 };
 
+if (!COLLAB_ENABLED) {
+  console.info('[SAF] Colaboración en vivo DESACTIVADA (VITE_COLLAB_ENABLED=false). '
+             + 'El guardado de marcas y la escala NO se ven afectados: van por ORDS.');
+}
+
 export class Collab {
   private ws: WebSocket | null = null;
   private doc: string | number | null = null;
@@ -58,6 +63,10 @@ export class Collab {
 
   /** Abre la conexión y entra a la sala del plano. */
   connect(doc: string | number, user: string, color: string): void {
+    // Colaboración en vivo apagada (VITE_COLLAB_ENABLED=false): ni conexión ni
+    // bucle de reintentos. `connected` queda en false para siempre, así que
+    // todos los envíos (_send) son no-ops y el resto del visor sigue igual.
+    if (!COLLAB_ENABLED) return;
     if (doc == null) return;
     this.user = user || 'Anónimo';
     this.color = color || '#64748b';

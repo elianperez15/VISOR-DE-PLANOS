@@ -68,8 +68,16 @@ export class MarkupLayer {
     this._detailTimer  = null;  // debounce de _refreshDetail
     this._baseSS       = 1;     // supersample del fondo base (imageW / logicalW)
     this.requestRegion = null;  // (rect{x,y,w,h}, density) => Promise<{dataUrl,pxW,pxH}>
+    // Igual que requestRegion pero devuelve el DIFF de revisiones de esa región.
+    // Lo inyecta features/compare-revisions mientras la comparación está activa.
+    this.requestCompareRegion = null;
     this._detailReqId  = 0;     // descarta resultados obsoletos al hacer zoom/pan rápido
     this._cmpImg       = null;  // overlay de comparación de revisiones (Rev B sobre A)
+    this._cmpSS        = 0;     // resolución del overlay de comparación (imgW / logicalW)
+    this._cmpDragging  = false; // overlay en modo "ajustar" (arrastrable)
+    this._cmpOpacity   = 1;     // opacidad real del overlay (se anula bajo un tile translúcido)
+    this._cmpTileImg   = null;  // tile de detalle DEL OVERLAY (ranura aparte del base)
+    this._cmpTileReqId = 0;
 
     // ── Undo / Redo ────────────────────────────────────────────────────
     this._undoStack  = [];
@@ -225,61 +233,227 @@ export class MarkupLayer {
     return { x: x1, y: y1, w: x2 - x1, h: y2 - y1, zoom };
   }
 
-  _clearDetail() {
-    if (this._detailTimer) { clearTimeout(this._detailTimer); this._detailTimer = null; }
-    if (this._detailImg)   { this.canvas.remove(this._detailImg); this._detailImg = null; }
+  /** Quita el tile del PLANO BASE. */
+  _clearBaseTile() {
     this._detailReqId++;   // invalida cualquier render en vuelo
+    if (!this._detailImg) return;
+    this.canvas.remove(this._detailImg);
+    this._detailImg = null;
+    this.canvas.requestRenderAll();
   }
 
-  /** Programa un refresco del tile de detalle (debounce tras zoom/pan) */
+  /** Quita el tile DEL OVERLAY y, si estaba tapado por él, devuelve al overlay
+      su opacidad. */
+  _clearCmpTile() {
+    this._cmpTileReqId++;
+    let changed = false;
+    if (this._cmpTileImg) {
+      this.canvas.remove(this._cmpTileImg);
+      this._cmpTileImg = null;
+      changed = true;
+    }
+    if (this._cmpImg && this._cmpImg.opacity === 0) {
+      this._cmpImg.set('opacity', this._cmpOpacity);
+      changed = true;
+    }
+    if (changed) this.canvas.requestRenderAll();
+  }
+
+  /** Arrastra el tile del overlay junto al overlay, en vez de re-renderizarlo.
+      El tile translúcido de "ajustar" lleva SÓLO la revisión, así que trasladarlo
+      equivale exactamente a volver a rasterizarla en la posición nueva — y eso
+      permite que el arrastre se vea nítido. Se mueve también la región que dice
+      cubrir, para que `_tileCovers` sepa cuándo deja de alcanzar. */
+  _dragCmpTile(dropIfUncovered) {
+    const t = this._cmpTileImg, c = this._cmpImg;
+    if (!t || !c || !t._anchor) return;
+    const dx = c.left - t._anchor.cmpLeft, dy = c.top - t._anchor.cmpTop;
+    t.left = t._anchor.left + dx;
+    t.top  = t._anchor.top  + dy;
+    if (t._tile) { t._tile.x = t._anchor.left + dx; t._tile.y = t._anchor.top + dy; }
+    t.setCoords();
+    /* Arrastrando más allá del margen, el tile deja de cubrir la vista y su borde
+       quedaría a la vista con la revisión cortada. Se retira: vuelve a verse el
+       overlay entero, de menos resolución, hasta que al soltar llegue el tile de
+       la posición nueva. (La densidad 0 hace que sólo se compruebe la geometría.) */
+    if (dropIfUncovered && !this._tileCovers(t, this._visibleLogicalRect(), 0)) {
+      this._clearCmpTile();
+    }
+  }
+
+  _clearDetail() {
+    if (this._detailTimer) { clearTimeout(this._detailTimer); this._detailTimer = null; }
+    this._clearBaseTile();
+    this._clearCmpTile();
+  }
+
+  /** Programa un refresco de los tiles de detalle (debounce tras zoom/pan) */
   _scheduleDetail() {
     const DETAIL_DEBOUNCE_MS = 180;
-    if (!this.requestRegion || !this._bgImage) return;
+    if (!this._bgImage) return;
+    if (!this.requestRegion && !this.requestCompareRegion) return;
     if (this._detailTimer) clearTimeout(this._detailTimer);
     this._detailTimer = setTimeout(() => this._refreshDetail(), DETAIL_DEBOUNCE_MS);
   }
 
+  /** Región a pedir: lo visible MÁS un margen, para que un desplazamiento corto
+      siga cayendo dentro del tile que ya hay y no obligue a re-renderizar.
+      Acotada a la página (no tiene sentido rasterizar fuera de la hoja). */
+  _tileRequestRect(rect) {
+    const M = 0.15;   // fracción de la vista añadida a cada lado
+    const mx = rect.w * M, my = rect.h * M;
+    const x  = Math.max(0, rect.x - mx);
+    const y  = Math.max(0, rect.y - my);
+    const x2 = Math.min(this._pdfW, rect.x + rect.w + mx);
+    const y2 = Math.min(this._pdfH, rect.y + rect.h + my);
+    return { x, y, w: Math.max(1, x2 - x), h: Math.max(1, y2 - y) };
+  }
+
+  /** ¿El tile que ya está puesto cubre `rect` con al menos la densidad pedida?
+      Si la cubre no hay nada que hacer: ni pedir, ni rasterizar, ni repintar. */
+  _tileCovers(img, rect, density) {
+    const t = img && img._tile;
+    if (!t) return false;
+    const EPS = 0.5;   // holgura en unidades de plano, por redondeos del viewport
+    return t.density >= density * 0.98
+        && t.x <= rect.x + EPS
+        && t.y <= rect.y + EPS
+        && t.x + t.w >= rect.x + rect.w - EPS
+        && t.y + t.h >= rect.y + rect.h - EPS;
+  }
+
+  /** ¿El error viene de haber cancelado un render obsoleto? (no es un fallo) */
+  _isCancelled(err) {
+    return !!err && (err.name === 'RenderingCancelledException' || err.type === 'canvas');
+  }
+
+  /** Coloca un tile ya cargado sobre la región `rect` que representa. */
+  _placeTile(img, rect, res) {
+    img.set({
+      left: rect.x, top: rect.y,
+      scaleX: rect.w / res.pxW,
+      scaleY: rect.h / res.pxH,
+      selectable: false, evented: false,
+      hasControls: false, hasBorders: false,
+      objectCaching: false,
+    });
+    img.isBackground = true;   // no se serializa como markup
+    // Qué cubre este tile, para poder reutilizarlo en el siguiente refresco
+    img._tile = { x: rect.x, y: rect.y, w: rect.w, h: rect.h, density: res.pxW / rect.w };
+  }
+
+  /** Convierte la respuesta de un proveedor de región en un fabric.Image.
+      Puede llegar como <canvas> ya pintado (ruta rápida, sin codificar PNG). */
+  _tileToImage(res, cb) {
+    if (res.canvas) cb(new fabric.Image(res.canvas));
+    else            fabric.Image.fromURL(res.dataUrl, cb);
+  }
+
+  /* Dos ranuras independientes de detalle, nunca activas a la vez:
+       · el tile del PLANO BASE (requestRegion), debajo de todo;
+       · el tile del OVERLAY de comparación (requestCompareRegion), justo encima
+         del overlay. Con el diff activo trae la diferencia recalculada; en modo
+         "ajustar", el plano base ya mezclado con la revisión.
+     Ambos son OPACOS y cubren sólo la región visible, así que se limitan a tapar
+     lo que hay debajo. Eso es lo que evita el parpadeo al hacer pan: el área que
+     el tile todavía no cubre enseña la misma imagen, sólo que menos nítida. */
   async _refreshDetail() {
-    if (!this.requestRegion || !this._bgImage) return;
+    if (!this._bgImage) return;
     const dpr  = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     const rect = this._visibleLogicalRect();
     if (rect.w <= 0 || rect.h <= 0) return;
+    const density = rect.zoom * dpr;   // px de pantalla por unidad lógica
 
-    const density = rect.zoom * dpr;  // px de pantalla por unidad lógica
-    const BASE_RESOLUTION_MARGIN = 1.05;   // tolerancia antes de pedir un tile de detalle
-    // Si el fondo base ya tiene resolución suficiente para este zoom, no hace falta detalle
-    if (density <= this._baseSS * BASE_RESOLUTION_MARGIN) { this._clearDetail(); return; }
+    /* El tile del plano base sólo sobra cuando lo de encima es OPACO: con el diff
+       puesto, pedirlo sería trabajo invisible. Al ajustar, en cambio, la revisión
+       va translúcida y el plano base se ve a través de ella, así que hacen falta
+       los dos. */
+    if (this._cmpImg && !this._cmpDragging) this._clearBaseTile();
+    else this._refreshBaseTile(rect, density);
 
+    if (this._cmpImg && this.requestCompareRegion) this._refreshCmpTile(rect, density);
+    else this._clearCmpTile();
+  }
+
+  async _refreshBaseTile(rect, density) {
+    if (!this.requestRegion) { this._clearBaseTile(); return; }
+    const MARGIN = 1.05;   // tolerancia antes de pedir un tile de detalle
+    // Si el fondo base ya tiene resolución suficiente para este zoom, no hace falta
+    if (density <= this._baseSS * MARGIN) { this._clearBaseTile(); return; }
+    // Ni tampoco si el tile que ya está puesto cubre lo visible
+    if (this._tileCovers(this._detailImg, rect, density)) return;
+
+    const req = this._tileRequestRect(rect);
     const reqId = ++this._detailReqId;
     let res;
     try {
-      res = await this.requestRegion({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, density);
+      res = await this.requestRegion(req, density);
     } catch (err) {
-      console.error('refreshDetail:', err);
+      if (!this._isCancelled(err)) console.error('refreshBaseTile:', err);
       return;
     }
-    // Descartar si el viewport ya cambió (otro refresh ganó la carrera)
-    if (reqId !== this._detailReqId || !res || !res.dataUrl) return;
+    if (reqId !== this._detailReqId) return;   // el viewport ya cambió: otro refresh ganó
+    if (!res || !(res.canvas || res.dataUrl)) { this._clearBaseTile(); return; }
 
-    fabric.Image.fromURL(res.dataUrl, img => {
-      if (reqId !== this._detailReqId) return;  // re-chequear tras la carga async
-      img.set({
-        left: rect.x, top: rect.y,
-        scaleX: rect.w / res.pxW,
-        scaleY: rect.h / res.pxH,
-        selectable: false, evented: false,
-        hasControls: false, hasBorders: false,
-        objectCaching: false,
-      });
-      img.isBackground = true;
+    this._tileToImage(res, (img) => {
+      if (reqId !== this._detailReqId) return;   // re-chequear tras la carga async
+      this._placeTile(img, req, res);
       img.name = '__pdf_detail__';
-
       if (this._detailImg) this.canvas.remove(this._detailImg);
       this._detailImg = img;
-      this.canvas.add(img);
       // Orden z: fondo base atrás, detalle encima del base, markup arriba de todo
+      this.canvas.add(img);
       this.canvas.sendToBack(img);
       if (this._bgImage) this.canvas.sendToBack(this._bgImage);
+      this.canvas.renderAll();
+    });
+  }
+
+  async _refreshCmpTile(rect, density) {
+    const MARGIN = 1.05;
+    if (density <= (this._cmpSS || 1) * MARGIN) { this._clearCmpTile(); return; }
+    if (this._tileCovers(this._cmpTileImg, rect, density)) return;
+
+    const req = this._tileRequestRect(rect);
+    const reqId = ++this._cmpTileReqId;
+    /* Ancla del arrastre. Se toma ANTES del render: el proveedor lee el
+       desplazamiento actual al empezar, así que un ancla tomada después
+       describiría una posición que no es la de la imagen devuelta. */
+    const anchor = { left: req.x, top: req.y, cmpLeft: this._cmpImg.left, cmpTop: this._cmpImg.top };
+    let res;
+    try {
+      res = await this.requestCompareRegion(req, density);
+    } catch (err) {
+      if (!this._isCancelled(err)) console.error('refreshCmpTile:', err);
+      return;
+    }
+    if (reqId !== this._cmpTileReqId) return;
+    // El proveedor puede declinar (p.ej. el diff aún no tiene su ráster base)
+    if (!res || !(res.canvas || res.dataUrl)) { this._clearCmpTile(); return; }
+
+    this._tileToImage(res, (img) => {
+      if (reqId !== this._cmpTileReqId || !this._cmpImg) return;
+      this._placeTile(img, req, res);
+      img.name    = '__cmp_detail__';
+      img._anchor = anchor;
+      /* Un tile OPACO (el diff) se limita a tapar al overlay, que sigue visible:
+         así el área que el tile aún no cubre enseña la misma imagen, sólo que
+         menos nítida — nada de parpadeos al hacer pan.
+         Uno TRANSLÚCIDO (la revisión al ajustarla) no puede superponerse al
+         overlay: las dos capas se sumarían y el dibujo saldría más oscuro. Ahí sí
+         hay que ocultar el overlay mientras el tile esté puesto. */
+      const translucent = typeof res.opacity === 'number' && res.opacity < 1;
+      if (translucent) img.set('opacity', res.opacity);
+
+      if (this._cmpTileImg) this.canvas.remove(this._cmpTileImg);
+      this._cmpTileImg = img;
+      // Justo ENCIMA del overlay (que a su vez está sobre el fondo), bajo el markup
+      const at = this.canvas.getObjects().indexOf(this._cmpImg);
+      if (at >= 0) this.canvas.insertAt(img, at + 1, false);
+      else         this.canvas.add(img);
+      this._dragCmpTile();   // por si el overlay se movió durante el render
+      if (translucent) this._cmpImg.set('opacity', 0);
+      else if (this._cmpImg.opacity === 0) this._cmpImg.set('opacity', this._cmpOpacity);
       this.canvas.renderAll();
     });
   }
@@ -289,12 +463,12 @@ export class MarkupLayer {
      La imagen de B se escala al tamaño lógico de A y se inserta por encima
      del fondo pero por debajo del markup. No se serializa (isBackground).
      ════════════════════════════════════════════════════════════════════ */
-  setCompareOverlay(dataUrl, imgW, imgH, opts = {}) {
+  setCompareOverlay(source, imgW, imgH, opts = {}) {
     const { opacity = 0.5, tint = null, interactive = false, offsetX = 0, offsetY = 0, onMove = null } = opts;
     return new Promise(resolve => {
       this.clearCompareOverlay();
-      if (!dataUrl || !this._pdfW) { resolve(); return; }
-      fabric.Image.fromURL(dataUrl, img => {
+      if (!source || !this._pdfW) { resolve(); return; }
+      const build = (img) => {
         img.set({
           left: offsetX, top: offsetY,
           scaleX: this._pdfW / imgW,
@@ -317,25 +491,46 @@ export class MarkupLayer {
           // Encima de todo para poder arrastrarlo en cualquier zona
           this.canvas.add(img);
           this.canvas.setActiveObject(img);
-          if (onMove) {
-            const report = () => onMove(img.left, img.top);
-            img.on('moving', report);
-            img.on('modified', report);
-          }
+          // El tile de detalle acompaña al arrastre (ver _dragCmpTile), así que la
+          // revisión se ve nítida MIENTRAS se mueve; al soltar se pide uno nuevo
+          // sólo si el desplazamiento la ha sacado de lo que el tile cubría.
+          img.on('moving', () => { this._dragCmpTile(true); if (onMove) onMove(img.left, img.top); });
+          img.on('modified', () => {
+            this._dragCmpTile(true);
+            if (onMove) onMove(img.left, img.top);
+            this._scheduleDetail();
+          });
         } else {
           // Encima de los fondos (bg + detalle), bajo el markup
           const bgCount = this.canvas.getObjects().filter(o => o.isBackground).length;
           this.canvas.insertAt(img, bgCount, false);
         }
-        this._cmpImg = img;
+        this._cmpImg      = img;
+        this._cmpSS       = imgW / this._pdfW;   // resolución efectiva del overlay
+        this._cmpDragging = interactive;
+        this._cmpOpacity  = opacity;   // la real: `img.opacity` se anula bajo un tile translúcido
         this.canvas.renderAll();
+        // Con el overlay puesto, el tile de detalle debe pasar a servir el diff
+        this._clearDetail();
+        this._scheduleDetail();
         resolve();
-      });
+      };
+      // `source` puede ser un <canvas> ya pintado (ruta rápida, sin PNG) o una URL
+      if (typeof source !== 'string') build(new fabric.Image(source));
+      else fabric.Image.fromURL(source, build);
     });
   }
 
   clearCompareOverlay() {
-    if (this._cmpImg) { this.canvas.remove(this._cmpImg); this._cmpImg = null; this.canvas.renderAll(); }
+    if (!this._cmpImg) return;
+    this.canvas.remove(this._cmpImg);
+    this._cmpImg = null;
+    this._cmpSS = 0;
+    this._cmpDragging = false;
+    // El tile que hubiera era del diff: descartarlo y volver al detalle del plano
+    this._clearDetail();
+    this.canvas.renderAll();
+    this._scheduleDetail();
   }
 
   setCompareOpacity(opacity) {
@@ -351,7 +546,9 @@ export class MarkupLayer {
     this._cmpImg.left += dx;
     this._cmpImg.top  += dy;
     this._cmpImg.setCoords();
+    this._dragCmpTile(true);  // el tile de detalle sigue al overlay
     this.canvas.renderAll();
+    this._scheduleDetail();   // y se rehace si ya no alcanza a cubrir la vista
     return { left: this._cmpImg.left, top: this._cmpImg.top };
   }
 
