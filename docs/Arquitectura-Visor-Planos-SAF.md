@@ -2,13 +2,13 @@
 
 **Documento de Arquitectura · AICSA**
 
-Sistema de visualización y anotación de planos (PDF) con colaboración en tiempo real, embebido en Oracle APEX y con persistencia en Oracle vía ORDS.
+Sistema de visualización y anotación de planos (PDF) y de modelos BIM en 3D (IFC), con colaboración en tiempo real, embebido en Oracle APEX y con persistencia en Oracle vía ORDS.
 
-*Versión 2.0 · actualizado 2026-09-22*
+*Versión 2.2 · actualizado 2026-10-21*
 
 ## 1. Visión general
 
-El visor es una SPA (Vite + TypeScript) que se ejecuta dentro de un iframe del portal APEX. Renderiza el PDF con PDF.js y permite anotarlo con Fabric.js. Las marcas se sincronizan en vivo entre usuarios mediante un microservicio WebSocket y se persisten en Oracle a través de ORDS. El archivo PDF original nunca se modifica: las marcas se guardan por separado.
+El visor es una SPA (Vite + TypeScript) que se ejecuta dentro de un iframe del portal APEX. Renderiza el PDF con PDF.js y permite anotarlo con Fabric.js. Las marcas se sincronizan en vivo entre usuarios mediante un microservicio WebSocket y se persisten en Oracle a través de ORDS. El archivo PDF original nunca se modifica: las marcas se guardan por separado. Los modelos IFC se ven en 3D con That Open Engine (three.js + web-ifc) en **otra URL del mismo visor**: `/` es el visor de planos (PDF) y `/modelo/` el visor del modelo (IFC). Comparten código, despliegue e integración con APEX, pero cada página carga sólo lo suyo.
 
 ## 2. Capas
 
@@ -16,10 +16,10 @@ El visor es una SPA (Vite + TypeScript) que se ejecuta dentro de un iframe del p
 |---|---|---|
 | 1 Usuario | Navegador | Accede al portal APEX. |
 | 2 APEX (padre) | Página APEX + iframe | Arma el mensaje `init` (identidad, plano, proyecto, permisos); puente `postMessage`. |
-| 3 Visor (iframe) | Vite + TS + Fabric + PDF.js | Render del PDF, herramientas de marcado, colaboración, descarga. |
+| 3 Visor (iframe) | Vite + TS + Fabric + PDF.js · That Open | Render del PDF, herramientas de marcado, colaboración, descarga. Modelo 3D (IFC / .frag). |
 | 4 nginx | 192.168.50.163 | Sirve el build en `/`, proxy hacia ORDS en `/ords/` y proxy WebSocket en `/rt/`. |
 | 5 Colaboración | `collab-server.js` (Node) | Relay WebSocket: cursores, deltas de capa y presencia. Sin persistencia. **Actualmente desactivada** en el cliente (`VITE_COLLAB_ENABLED=false`). |
-| 6 ORDS | Base path `planos-hub/` | REST: PDF, marcas, listados de planos y de RFI. |
+| 6 ORDS | Base path `planos-hub/` | REST: PDF y modelos IFC, marcas, listados de planos y de RFI. |
 | 7 Datos | Oracle DB + File Server | Marcas (JSON), revisiones, repositorio documental y PDF originales. |
 
 ## 3. Principio de diseño: el bundle no conoce ningún dominio
@@ -32,19 +32,39 @@ La contrapartida es que el visor no sabe —ni puede saber— contra qué base e
 
 ## 4. Módulos del visor (frontend)
 
-| Archivo | Función |
-|---|---|
-| `main.ts` | Orquestador: estado, navegación, paneles, identidad, descarga, integración APEX. |
-| `core/pdf-renderer.ts` | PDF.js v3: render con supersample y tiles de detalle. Diagnostica los fallos de carga traduciendo los mensajes opacos de pdf.js a la causa HTTP real. |
-| `core/markup-layer.ts` | Fabric.js v5: herramientas, capas por autor, undo/redo, escala, colaboración. |
-| `core/collab.ts` | Cliente WebSocket nativo (sin dependencias): cursores, deltas, presencia. |
-| `core/scale-manager.ts` | Calibración de escala (px ↔ unidad real). |
-| `config.ts` | Endpoints configurables por variables `VITE_*`. |
-| `ui/icons.ts` · `styles/viewer.css` | Iconos embebidos (offline) y tema tokenizado (gris AICSA). |
+El código está organizado por **dominio** (*screaming architecture*): las carpetas de `src/` dicen qué hace el visor, no con qué tecnología está hecho. Cada dominio expone una función `createX(ctx)` que recibe sus dependencias por un `ctx`, y `main.ts` sólo los compone.
+
+| Carpeta | Responsabilidad | Piezas principales |
+|---|---|---|
+| `main.ts` · `main-modelo.ts` | Puntos de entrada de las dos páginas (`/` planos, `/modelo/` modelo 3D): crean los dominios, los conectan y arrancan. Sin lógica de negocio. | — |
+| `plano/` | Abrir, renderizar, navegar, rotar y hacer zoom sobre el PDF. Diagnostica los fallos de carga traduciendo los mensajes opacos de pdf.js a la causa HTTP real. | `pdf-renderer` · `plan-viewer` · `plans-api` · `detail-tiles` · `viewer-notice` |
+| `anotaciones/` | Lienzo de marcas (Fabric.js v5), herramientas, panel de propiedades, sellos y adjuntos. | `lienzo/markup-layer` (núcleo) · `lienzo/shapes` · `lienzo/clouds` · `lienzo/text-labels` · `toolbar` · `properties-panel` · `attachments` |
+| `mediciones/` | Escala (px ↔ unidad real), calibración y figuras de medición. | `scale-manager` · `calibration` · `measure-shapes` · `area-panel` |
+| `rfi/` | Nubes y sellos RFI, selector de RFI y drawer en APEX. | `rfi` · `rfi-api` · `rfi-cloud-stamp` |
+| `hipervinculos/` | Enlaces de un plano a otro del repositorio. | `plan-links` |
+| `revisiones/` | Comparación de revisiones (overlay y diff de alta resolución). | `compare-revisions` · `compare-overlay` |
+| `modelo-3d/` | Visor del modelo BIM (IFC o `.frag`) con That Open Engine — página `/modelo/`: abrir un IFC local o del repositorio; seleccionar y ver propiedades; árbol por niveles y tipos (ocultar, aislar); medir distancia, área y volumen; cortes. El motor se descarga sólo al abrir un modelo (chunk `bim`). | Interfaz: `model-viewer` · `model-tree-panel` · `model-properties-panel` · `models-api` · `ifc-names`. Motor (únicos que importan three / @thatopen): `bim-engine` · `bim-selection` · `bim-structure` · `bim-tools`. Puente: `bim-types` (sólo tipos). |
+| `colaboracion/` | Colaboración en vivo por WebSocket: capas de otros autores, cursores, presencia, autoría. | `collab` (cliente) · `collab-sync` · `canvas-collab` · `collaborators-panel` · `author-tooltip` |
+| `persistencia/` | Marcas, escala y rotación en Oracle vía ORDS; exportación de la sesión a JSON. | `markup-store` · `save-marks` · `session-file` |
+| `exportacion/` | Descarga en PDF (con/sin marcas), captura por selección y entrega del archivo. | `export-pdf` · `region-snapshot` · `canvas-export` · `download` |
+| `integracion-apex/` | Puente `postMessage` con la página APEX (entrada y salida, validando el origen). | `apex-bridge` · `close-viewer` |
+| `usuario/` | Identidad, permiso de colaborador y color determinístico por autor. | `identity` · `user-colors` |
+| `compartido/` | UI y utilidades sin dominio, usadas por los dos visores. | `ui/` (iconos, menús, riel flotante de herramientas, modales, selector con buscador, toast) · `utils/` · `ords` |
+| `app/` | Configuración (`VITE_*`), rutas de las dos páginas y traspaso entre ellas, atajos de teclado y orden de la cascada CSS. | `config` · `viewer-routes` · `keyboard-shortcuts` · `styles.css` · `styles-modelo.css` |
+
+`MarkupLayer` es una sola clase, pero cada dominio aporta sus métodos de lienzo desde su carpeta (*mixins* sobre el prototipo, con la interfaz de TypeScript fusionada para conservar el tipado). El CSS también vive junto a cada dominio; `app/styles.css` sólo fija el orden de la cascada.
 
 ## 5. Flujos principales
 
 - **Carga del plano.** APEX manda `postMessage {action:'init', repoId, nombre, ...}` al iframe → el visor pide `GET /ords/safws/planos-hub/documento` con `id` y `nombre` como **headers HTTP** → nginx reenvía a ORDS → PDF.js renderiza y Fabric monta la capa de marcas.
+
+- **Modelo 3D.** Llega de dos formas:
+  - **Local:** en `/modelo/`, el usuario pulsa **Abrir IFC** o arrastra un `.ifc` a la página. El archivo se lee en el navegador y **no se sube al servidor**.
+  - **Repositorio:** APEX carga el iframe con `/modelo/` y manda el `init` con el `repoId` / `nombre` del `.ifc` (ver `actualizarFrameModelo` en `Apex-Configuracion.js`). El visor lo pide al mismo endpoint `documento` (ver `API_MODELO`).
+
+  El motor 3D (chunk `bim`, ~0,5 MB comprimido) sólo abre fragments (`.frag`). Un IFC se convierte antes en un Web Worker con web-ifc (WebAssembly, servido desde `/web-ifc/<versión>/`; el worker sólo se descarga si hay que convertir) y el `.frag` resultante se guarda en la caché del navegador (IndexedDB). Convertir un IFC grande lleva minutos y abrir su `.frag`, segundos: lo recomendable es convertir al subir el modelo (`npm run convertir-ifc`) y que la API entregue el `.frag`.
+
+- **Traspaso entre páginas.** Si al visor de planos le llega un `.ifc` (o al 3D un PDF), navega a la otra página pasando por la URL el documento, el usuario, el proyecto y el permiso (`app/viewer-routes.ts`). Hace falta porque APEX manda el `init` una sola vez.
 
 - **Tiempo real** *(desactivado actualmente)*. El visor se conecta por WebSocket (`/rt/ws`) al microservicio → cursores en vivo, deltas de capa por autor y presencia entre usuarios del mismo plano. Es la única parte que se apaga con `VITE_COLLAB_ENABLED=false`; todo lo demás es independiente.
 
@@ -58,9 +78,9 @@ La contrapartida es que el visor no sabe —ni puede saber— contra qué base e
 
 ## 5.1 Efímero vs. persistente
 
-La distinción más importante del sistema, y la que más confusión ha causado, porque los nombres de los archivos sugieren lo contrario:
+La distinción más importante del sistema. Antes los nombres de los archivos sugerían lo contrario (la persistencia vivía en `collab-sync`); desde la v2.1 cada camino está en su carpeta:
 
-| | `core/collab.ts` | `features/collab-sync.ts` |
+| | `colaboracion/` (`collab.ts` + `collab-sync.ts`) | `persistencia/markup-store.ts` |
 |---|---|---|
 | Transporte | WebSocket | HTTP → ORDS |
 | Qué lleva | Cursores, deltas en vivo, presencia | Marcas, escala calibrada, rotación |
@@ -92,10 +112,12 @@ La única excepción es el mensaje `close`, que el visor envía con `targetOrigi
 | Headers con guion bajo descartados | `codigo_proyecto` NULL en los handlers | Falta `underscores_in_headers on;` |
 | Contexto SELinux incorrecto | 403 de nginx con permisos POSIX correctos | Falta `restorecon` tras crear el web root |
 | `iframe.src` sin cambiar | El `init` nunca llega | Asignar el mismo valor no recarga: el evento `load` no se dispara |
+| `.wasm` / `.mjs` con Content-Type incorrecto | El modelo 3D no carga (error de MIME en consola) | nginx no mapea `wasm` → `application/wasm` ni `mjs` → `application/javascript` |
+| CSP sin `'wasm-unsafe-eval'` | `WebAssembly.instantiate(): Refused to compile` | La política de `security-headers.inc` bloquea WebAssembly |
 
 ## 8. Stack tecnológico
 
-Vite 5 · TypeScript · Fabric.js 5.3 · PDF.js 3.11 · WebSocket nativo · Node.js (systemd) · nginx · Oracle APEX · ORDS · Oracle Database.
+Vite 5 · TypeScript · Fabric.js 5.3 · PDF.js 3.11 · three.js 0.184 · That Open Engine 3.4 (components, components-front, fragments) · web-ifc 0.0.77 · WebSocket nativo · Node.js (systemd) · nginx · Oracle APEX · ORDS · Oracle Database.
 
 ## 9. Documentos relacionados
 

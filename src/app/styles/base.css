@@ -1,0 +1,102 @@
+/* ═══════════════════════════════════════════
+   SAF — Visor de Planos con Fabric.js
+   ═══════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* ── Tipografía (tamaños de texto) ── */
+  --fs-3xs: 8px;
+  --fs-2xs: 9px;
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs-base: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 15px;
+  --fs-2xl: 16px;
+  --fs-3xl: 17px;
+  --fs-4xl: 18px;
+  --fs-5xl: 22px;
+  --fs-display: 48px;
+
+  /* ── Layout / radios ── */
+  --toolbar-h: 46px;
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+
+  /* ── Rampa neutra (gris AICSA, de claro a oscuro) ── */
+  --n-0:   #ffffff;
+  --n-50:  #f4f5f6;
+  --n-100: #e9eaec;
+  --n-200: #dcdee1;
+  --n-300: #cbced2;
+  --n-400: #b0b3b8;
+  --n-500: #8b8f95;
+  --n-600: #676b71;
+  --n-700: #4a4e54;
+  --n-800: #2e3136;
+  --n-900: #1b1d20;
+
+  /* ── Superficies / chrome (gris AICSA) ── */
+  --bg: #202225;              /* marco exterior (casi nunca visible) */
+  --bg-toolbar: #F7F7F7;      /* barra superior, riel, paneles, menús */
+  --bg-canvas: #aeaeae;       /* fondo del lienzo (detrás del PDF) */
+  --surface-hover: rgba(0,0,0,.07);  /* hover sutil sobre cualquier superficie clara */
+  --surface-inset: #ffffff;   /* inputs, campos, fondos hundidos */
+  --rail-grad-1: #F7F7F7;     /* degradado del riel (arriba) */
+  --rail-grad-2: #eceaea;     /* degradado del riel (abajo) */
+  --border: #a8abb0;          /* visible contra chrome e inputs */
+
+  /* ── Texto ── */
+  --text: #1b1d20;            /* casi negro */
+  --text-muted: #565a60;      /* gris medio legible sobre chrome/blanco */
+  --text-faint: #868b91;      /* placeholders, deshabilitado */
+
+  /* ── Marca / acento (rojo AICSA) ── */
+  --accent: #e1251b;                        /* rojo principal AICSA */
+  --accent-strong: #c11d14;                 /* hover/pressed */
+  --accent-bg: rgba(225, 37, 27, .10);      /* relleno suave (estados activos) */
+  --accent-bg-2: rgba(225, 37, 27, .16);    /* relleno medio */
+  --accent-border: rgba(225, 37, 27, .42);
+  --aicsa-red: #e1251b;
+
+  /* ── Estados ── */
+  --danger: #ef4444;
+  --danger-strong: #dc2626;
+  --danger-soft: #f87171;
+  --warning: #f59e0b;
+  --warning-strong: #b45309;
+  --warning-soft: #fbbf24;
+  --success: #22c55e;
+  --success-strong: #16a34a;
+  --green: #22c55e;   /* alias retrocompatible */
+}
+
+body {
+  background: var(--bg-canvas);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: var(--fs-md);
+  color: var(--text);
+  overflow: hidden;
+  height: 100vh;
+}
+
+.saf-app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ── Main: riel de herramientas + lienzo ── */
+.saf-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;   /* ancla del riel flotante */
+}

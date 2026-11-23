@@ -1,0 +1,253 @@
+/* toolbar.css — Barra superior: botones, controles de estilo, menús desplegables e iconos */
+
+/* ── Toolbar ── */
+.saf-toolbar {
+  height: var(--toolbar-h);
+  min-height: var(--toolbar-h);
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+  z-index: 500;
+  scrollbar-width: none;
+}
+.saf-toolbar::-webkit-scrollbar { display: none; }
+
+.tb-sep {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+/* Botones */
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  white-space: nowrap;
+  transition: background .13s;
+  user-select: none;
+  flex-shrink: 0;
+  touch-action: manipulation;   /* tap inmediato en táctil, sin doble-tap-zoom */
+}
+.tb-btn:disabled                       { opacity: .35; cursor: not-allowed; }
+.tb-btn.tb-icon                        { width: 28px; padding: 0; justify-content: center; font-size: var(--fs-xl); }
+.tb-btn-primary                        { background: var(--accent); color: #fff; }
+.tb-btn-active                         { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
+.tb-btn-save                           { background: transparent; color: var(--text); border: 1px solid var(--n-700); }
+/* Hover SÓLO en dispositivos con puntero real. En táctil el :hover se queda
+   "pegado" y, por su mayor especificidad, tapaba el rojo del botón activo. */
+@media (hover: hover) {
+  .tb-btn:hover:not(:disabled)          { background: var(--surface-hover); }
+  .tb-btn-primary:hover:not(:disabled)  { background: var(--accent-strong); }
+  .tb-btn-danger:hover:not(:disabled)   { background: var(--danger); color: #fff; }
+  .tb-btn-save:hover:not(:disabled)     { background: var(--surface-hover); border-color: var(--n-900); }
+}
+
+/* Herramientas activas */
+.tb-tool.tb-btn-active {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+}
+
+.tb-zoom-info {
+  font-size: var(--fs-base);
+  color: var(--text-muted);
+  min-width: 52px;
+  text-align: center;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.tb-scale-info {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 5px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Spacer flexible: empuja el grupo derecho al extremo aunque algún botón se oculte */
+.tb-spacer { flex: 1 1 auto; min-width: 6px; align-self: stretch; }
+
+.tb-status {
+  display: none;   /* leyendas de estado ocultas (Sin documento, Renderizando…, etc.) */
+}
+
+/* Campo etiquetado (control + rótulo arriba) — mismo patrón que .tb-color-wrap */
+.tb-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;          /* rótulo centrado sobre su control */
+  gap: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tb-field > span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1;
+  white-space: nowrap;
+}
+.tb-field-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.tb-field-val {
+  font-size: var(--fs-2xs);
+  color: var(--text);
+  font-weight: 600;
+  min-width: 26px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.tb-field .tb-select { height: 22px; }
+
+/* Color inputs */
+.tb-color-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tb-color-wrap span {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1;
+  white-space: nowrap;
+}
+.tb-color-wrap input[type="color"] {
+  width: 24px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tb-range {
+  width: 56px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── Dropdown menus ── */
+.tb-dropdown-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tb-dropdown {
+  display: none;
+  position: fixed;        /* escapa el overflow:hidden del toolbar */
+  top: 0; left: 0;       /* JS los sobreescribe al abrir */
+  min-width: 200px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.65);
+  z-index: 9999;
+  padding: 4px;
+  flex-direction: column;
+}
+.tb-dropdown.open { display: flex; }
+
+.tb-dropdown-btn {
+  gap: 5px;
+}
+
+.tb-drop-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 7px 11px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  text-align: left;
+  white-space: nowrap;
+  transition: background .12s;
+  gap: 8px;
+}
+.tb-drop-item:hover:not(:disabled)    { background: var(--surface-hover); }
+.tb-drop-item:disabled                { opacity: .35; cursor: not-allowed; }
+.tb-drop-item.tb-btn-active           { background: var(--accent-bg-2); color: var(--accent); }
+
+.tb-drop-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 3px 6px;
+}
+
+.tb-drop-header {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  padding: 4px 11px 2px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.tb-caret {
+  font-size: var(--fs-2xs);
+  opacity: .55;
+}
+
+/* Tool group button label parts */
+.tool-gicon { font-size: var(--fs-md); display: inline-flex; }
+.tool-gname { font-size: var(--fs-base); }
+
+/* ── Iconos Lucide (SVG) ── */
+.lucide {
+  width: 18px; height: 18px;
+  stroke-width: 2;
+  flex-shrink: 0;
+  vertical-align: middle;
+  pointer-events: none;       /* el clic va al botón, no al svg */
+}
+.tb-btn.tb-icon .lucide       { width: 17px; height: 17px; }
+.tool-rail .tb-btn .lucide    { width: 21px; height: 21px; }
+.tb-drop-item .lucide         { width: 16px; height: 16px; }
+.tb-caret .lucide             { width: 12px; height: 12px; opacity: .7; }
+.tool-gicon .lucide           { width: 19px; height: 19px; }
+/* Iconos inline que reemplazan emojis en textos y encabezados */
+.modal-box h3 .lucide         { width: 18px; height: 18px; vertical-align: -3px; margin-right: 4px; }
+.modal-head span .lucide      { width: 17px; height: 17px; vertical-align: -3px; margin-right: 4px; }
+.ap-title .lucide             { width: 16px; height: 16px; vertical-align: -3px; margin-right: 4px; }
+.cal-head-ic .lucide          { width: 18px; height: 18px; vertical-align: -3px; }
+.stamp-opt .lucide            { width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; }
+.tip-type .lucide, .tip-fecha .lucide { width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; }
+.ap-close .lucide,
+#btn-area-close .lucide      { width: 15px; height: 15px; }
+
+/* Ítem de desplegable con explicación debajo del nombre (modo de representación) */
+.tb-drop-text { display: flex; flex-direction: column; gap: 1px; text-align: left; }
+.tb-drop-hint { color: var(--text-muted); font-size: var(--fs-sm); }
+.tb-drop-item.tb-btn-active .tb-drop-hint { color: inherit; opacity: .75; }

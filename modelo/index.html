@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Univera — Visor de Modelos 3D</title>
+  <!-- El CSS se importa desde src/main-modelo.ts (Vite lo procesa y extrae en build) -->
+</head>
+
+<body>
+  <div class="saf-app" id="app">
+
+    <!-- ══════════════════ TOOLBAR (acciones; las herramientas van en el riel) ══════════════════ -->
+    <div class="saf-toolbar" id="toolbar">
+      <button class="tb-btn" id="btn-open-ifc" title="Abrir un modelo IFC de tu computadora (no se sube al servidor)"><i
+          data-lucide="upload"></i> Abrir IFC</button>
+      <input type="file" id="ifc-file-input" accept=".ifc,.frag" hidden>
+      <button class="tb-btn" id="btn-download-frag" disabled
+        title="Descargar el modelo convertido (.frag): abre en segundos. Es el archivo que conviene guardar en el repositorio"><i
+          data-lucide="download"></i> .frag</button>
+
+      <div class="tb-sep"></div>
+
+      <!-- ── Paneles ── -->
+      <button class="tb-btn tb-icon" id="btn-toggle-tree" disabled title="Edificio: niveles y tipos de elemento"><i
+          data-lucide="list-tree"></i></button>
+      <button class="tb-btn tb-icon" id="btn-toggle-search" disabled title="Buscar elementos por nombre"><i
+          data-lucide="search"></i></button>
+      <button class="tb-btn tb-icon" id="btn-toggle-views" disabled title="Vistas 2D y puntos de vista guardados"><i
+          data-lucide="layers"></i></button>
+      <button class="tb-btn tb-icon" id="btn-toggle-props" disabled title="Propiedades del elemento seleccionado"><i
+          data-lucide="panel-right"></i></button>
+
+      <div class="tb-sep"></div>
+
+      <!-- ── Vista ── -->
+      <button class="tb-btn tb-icon" id="btn-3d-fit" disabled title="Encuadrar el modelo (F)"><i
+          data-lucide="maximize"></i></button>
+      <button class="tb-btn" id="btn-3d-projection" disabled title="Cambiar entre vista en perspectiva y ortográfica"><i
+          data-lucide="box"></i> <span id="btn-3d-projection-label">Perspectiva</span></button>
+      <div class="tb-dropdown-wrap">
+        <button class="tb-btn tb-dropdown-btn" id="btn-3d-style" disabled
+          title="Cómo se dibuja el modelo">
+          <i data-lucide="palette"></i> <span id="btn-3d-style-label">Plano</span>
+          <span class="tb-caret"><i data-lucide="chevron-down"></i></span>
+        </button>
+        <div class="tb-dropdown" id="dropdown-style-3d">
+          <div class="tb-drop-header">Modo de representación</div>
+          <button class="tb-drop-item" data-style3d="realista"><i data-lucide="star"></i>
+            <span class="tb-drop-text">Realista<span class="tb-drop-hint">Relieve y aristas</span></span></button>
+          <button class="tb-drop-item" data-style3d="sombras"><i data-lucide="eye"></i>
+            <span class="tb-drop-text">Sombras<span class="tb-drop-hint">Relieve en esquinas y rincones</span></span></button>
+          <button class="tb-drop-item" data-style3d="fantasma"><i data-lucide="eye-off"></i>
+            <span class="tb-drop-text">Fantasma<span class="tb-drop-hint">Translúcido, para ver el interior</span></span></button>
+          <button class="tb-drop-item" data-style3d="dibujo"><i data-lucide="pencil"></i>
+            <span class="tb-drop-text">Dibujo<span class="tb-drop-hint">Sólo líneas, sin color</span></span></button>
+          <button class="tb-drop-item" data-style3d="plano"><i data-lucide="square"></i>
+            <span class="tb-drop-text">Plano<span class="tb-drop-hint">Sin efectos</span></span></button>
+        </div>
+      </div>
+      <span class="tb-model-name" id="model-name"></span>
+
+      <div class="tb-spacer"></div>
+
+      <button class="tb-btn tb-btn-save" id="btn-close-viewer" title="Cerrar visor"><i data-lucide="x"></i>
+        Cerrar</button>
+      <span class="tb-status" id="tb-status">Sin modelo</span>
+    </div>
+
+    <!-- ══════════════════ MAIN: panel Edificio · modelo (con el riel) · panel Propiedades ══════════════════ -->
+    <div class="model-main">
+
+      <!-- Panel izquierdo: el edificio por niveles y tipos (ver model-tree-panel.ts) -->
+      <aside class="model-panel model-panel-left" id="model-tree-panel" hidden>
+        <div class="model-panel-head">
+          <span class="model-panel-title"><i data-lucide="list-tree"></i> Edificio</span>
+          <button class="model-panel-action" id="btn-tree-show-all" title="Volver a mostrar todo el modelo">Mostrar todo</button>
+          <button class="model-panel-close" data-close-panel="tree" title="Cerrar panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="model-tabs" id="model-tree-tabs" role="tablist" hidden></div>
+        <div class="model-panel-body" id="model-tree"></div>
+      </aside>
+
+      <!-- Panel izquierdo: buscar elementos por nombre (ver model-search-panel.ts) -->
+      <aside class="model-panel model-panel-left" id="model-search-panel" hidden>
+        <div class="model-panel-head">
+          <span class="model-panel-title"><i data-lucide="search"></i> Buscar</span>
+          <button class="model-panel-action" id="btn-search-show-all"
+                  title="Volver a mostrar todo el modelo">Mostrar todo</button>
+          <button class="model-panel-close" data-close-panel="search" title="Cerrar panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="model-search-form">
+          <input class="model-search-input" id="model-search-text" type="search" autocomplete="off"
+                 placeholder="Nombre del elemento…" aria-label="Buscar por nombre">
+          <select class="model-search-select" id="model-search-category" aria-label="Acotar por tipo de elemento">
+            <option value="">Todos los tipos</option>
+          </select>
+          <div class="model-search-actions" id="model-search-actions">
+            <span class="model-search-summary" id="model-search-summary"></span>
+            <button class="model-panel-action" id="btn-search-select-all" disabled
+                    title="Seleccionar y encuadrar todos los resultados">Seleccionar todo</button>
+            <button class="model-panel-action" id="btn-search-isolate" disabled
+                    title="Ver sólo los resultados">Aislar</button>
+          </div>
+        </div>
+        <div class="model-panel-body" id="model-search-results"></div>
+      </aside>
+
+      <!-- Panel izquierdo: vistas 2D y puntos de vista (ver model-views-panel.ts) -->
+      <aside class="model-panel model-panel-left" id="model-views-panel" hidden>
+        <div class="model-panel-head">
+          <span class="model-panel-title"><i data-lucide="layers"></i> Vistas</span>
+          <button class="model-panel-action" id="btn-views-back-3d" hidden
+                  title="Cerrar la vista 2D y volver al modelo">Volver al 3D</button>
+          <button class="model-panel-close" data-close-panel="views" title="Cerrar panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="model-panel-body">
+          <details class="views-section" open>
+            <summary class="views-section-title">Vistas 2D del modelo</summary>
+            <div class="views-section-actions">
+              <button class="model-panel-action" id="btn-views-generate"
+                      title="Crear una planta por nivel y los cuatro alzados">Generar plantas y alzados</button>
+            </div>
+            <div id="model-views-2d"></div>
+          </details>
+          <details class="views-section" open>
+            <summary class="views-section-title">Puntos de vista</summary>
+            <div class="views-section-actions">
+              <button class="model-panel-action" id="btn-viewpoint-save"
+                      title="Guardar el encuadre actual y los elementos seleccionados">Guardar vista actual</button>
+            </div>
+            <div id="model-viewpoints"></div>
+          </details>
+        </div>
+      </aside>
+
+      <div class="model-area">
+
+        <!-- ── Riel de herramientas flotante (mismo riel que el visor de planos) ── -->
+        <div class="tool-rail" id="tool-rail">
+          <div class="rail-drag" id="rail-drag" title="Arrastra para mover la barra"><i data-lucide="grip-horizontal"></i>
+          </div>
+          <button class="rail-orient-btn" id="rail-orient" title="Cambiar orientación (horizontal / vertical)"><i
+              data-lucide="arrow-left-right"></i></button>
+          <div class="rail-sep"></div>
+
+          <button class="tb-btn tb-tool tb-btn-active" id="btn-tool-select" data-tool3d="select" disabled
+            title="Seleccionar (V) — clic: un elemento · Mayús+clic: sumar · doble clic: acercarse"><i
+              data-lucide="mouse-pointer-2"></i></button>
+
+          <div class="rail-sep"></div>
+
+          <!-- Grupo: Medir (distancia · área de una cara · área por puntos · volumen) -->
+          <div class="tb-dropdown-wrap">
+            <button class="tb-btn tb-dropdown-btn tb-tool-group-btn rail-group" id="btn-measure-group" disabled
+              data-tool3d-group="length" title="Medir en metros reales (distancia, área, volumen)">
+              <span class="tool-gicon"><i data-lucide="ruler"></i></span>
+              <span class="tool-gname">Medir</span>
+              <span class="tb-caret"><i data-lucide="chevron-right"></i></span>
+            </button>
+            <div class="tb-dropdown" id="dropdown-measure-3d">
+              <div class="tb-drop-header">Medir en metros reales</div>
+              <button class="tb-drop-item" data-tool3d="length" data-icon="ruler"><i data-lucide="ruler"></i> Distancia</button>
+              <button class="tb-drop-item" data-tool3d="area-face" data-icon="square"><i data-lucide="square"></i> Área de una cara</button>
+              <button class="tb-drop-item" data-tool3d="area-free" data-icon="pentagon"><i data-lucide="pentagon"></i> Área por puntos</button>
+              <button class="tb-drop-item" data-tool3d="volume" data-icon="box"><i data-lucide="box"></i> Volumen de elementos</button>
+            </div>
+          </div>
+
+          <button class="tb-btn tb-tool" id="btn-tool-clip" data-tool3d="clip" disabled
+            title="Corte — doble clic sobre una superficie para cortar el modelo ahí"><i
+              data-lucide="scissors"></i></button>
+
+          <div class="rail-sep"></div>
+
+          <button class="tb-btn tb-icon" id="btn-3d-mark" disabled
+            title="Etiquetar lo seleccionado (deja un rótulo pegado al modelo)"><i
+              data-lucide="sticky-note"></i></button>
+
+          <button class="tb-btn tb-icon" id="btn-3d-clear-tools" disabled
+            title="Borrar medidas, cortes y etiquetas"><i
+              data-lucide="trash-2"></i></button>
+        </div>
+
+        <!-- ── Vista 3D (That Open Engine) — ver src/modelo-3d/ ── -->
+        <div class="model-wrapper" id="model-wrapper">
+          <div class="model-canvas" id="model-canvas"></div>
+
+          <!-- Cubo de navegación, sobre el lienzo (ver model-navcube.ts) -->
+          <div class="navcube" id="model-navcube" hidden aria-label="Cubo de navegación">
+            <div class="navcube-box" id="model-navcube-box"></div>
+          </div>
+
+          <div class="model-empty" id="model-empty">
+            <div class="model-empty-icon"><i data-lucide="box"></i></div>
+            <h2>No hay un modelo 3D abierto</h2>
+            <p>Abre un archivo IFC de tu computadora o arrástralo aquí. Se ve sólo en tu navegador: no se sube al servidor.</p>
+            <button class="tb-btn tb-btn-primary" id="btn-model-empty-open"><i data-lucide="upload"></i> Abrir IFC…</button>
+          </div>
+
+          <div class="model-loader" id="model-loader" hidden>
+            <span class="model-spin"></span>
+            <span class="model-loader-lines">
+              <span id="model-loader-text">Cargando modelo…</span>
+              <span class="model-loader-note" id="model-loader-note" hidden></span>
+            </span>
+          </div>
+
+          <div class="model-notice" id="model-notice" hidden>
+            <div class="model-notice-box">
+              <div class="model-notice-icon"><i data-lucide="alert-triangle"></i></div>
+              <h2>No se pudo abrir el modelo</h2>
+              <p id="model-notice-text"></p>
+              <details id="model-notice-details" hidden>
+                <summary>Detalles técnicos</summary>
+                <pre id="model-notice-tech"></pre>
+              </details>
+            </div>
+          </div>
+
+          <div class="model-drop-hint">Suelta el archivo IFC para abrirlo</div>
+        </div>
+
+        <!-- Cómo se usa la herramienta activa -->
+        <div class="model-hint" id="model-hint" hidden>
+          <span id="model-hint-text"></span>
+          <span class="model-hint-footer" id="model-hint-footer"></span>
+        </div>
+      </div><!-- .model-area -->
+
+      <!-- Panel derecho: datos del elemento seleccionado (ver model-properties-panel.ts) -->
+      <aside class="model-panel model-panel-right" id="model-props-panel" hidden>
+        <div class="model-panel-head">
+          <span class="model-panel-title"><i data-lucide="clipboard-list"></i> Propiedades</span>
+          <button class="model-panel-close" data-close-panel="props" title="Cerrar panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="model-panel-body" id="model-props"></div>
+      </aside>
+    </div><!-- .model-main -->
+  </div>
+
+  <!-- Modal de confirmación (Cerrar visor) -->
+  <div class="modal-overlay" id="modal-confirm" style="display:none">
+    <div class="modal-card confirm-card">
+      <div class="confirm-icon"><i data-lucide="alert-triangle"></i></div>
+      <div class="confirm-title" id="confirm-title">¿Confirmar?</div>
+      <div class="confirm-msg" id="confirm-msg"></div>
+      <div class="confirm-actions">
+        <button class="confirm-btn confirm-cancel" id="confirm-cancel"><i data-lucide="x"></i> Cancelar</button>
+        <button class="confirm-btn confirm-ok confirm-danger" id="confirm-ok">Aceptar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bundle ESM + TypeScript (three + That Open vía npm, cargados bajo demanda) -->
+  <script type="module" src="/src/main-modelo.ts"></script>
+</body>
+
+</html>

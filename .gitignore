@@ -1,5 +1,9 @@
 node_modules/
 dist/
+# WebAssembly de web-ifc: lo copia scripts/copy-web-ifc.mjs desde node_modules
+public/web-ifc/
+# Licencias de terceros: las genera scripts/third-party-licenses.mjs en cada dev/build
+public/THIRD_PARTY_LICENSES.txt
 *.log
 .DS_Store
 

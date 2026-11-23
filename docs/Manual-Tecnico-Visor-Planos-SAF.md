@@ -6,13 +6,13 @@
 |---|---|
 | Producto | Visor de Planos SAF |
 | Tipo | SPA embebida en Oracle APEX (iframe) |
-| Versión doc. | 2.0 |
-| Actualizado | 2026-09-22 |
+| Versión doc. | 2.2 |
+| Actualizado | 2026-10-21 |
 | Público | Equipo de desarrollo / operaciones |
 
 ## 1. Introducción
 
-El Visor de Planos SAF permite visualizar planos en PDF y anotarlos (marcas) con colaboración en tiempo real. Se integra en el portal APEX de AICSA mediante un iframe. El PDF original no se modifica: las anotaciones se guardan aparte, por usuario y por plano.
+El Visor de Planos SAF permite visualizar planos en PDF y anotarlos (marcas) con colaboración en tiempo real, y ver modelos BIM en 3D (IFC). Se integra en el portal APEX de AICSA mediante un iframe. El PDF original no se modifica: las anotaciones se guardan aparte, por usuario y por plano.
 
 ## 2. Stack y estructura del proyecto
 
@@ -21,6 +21,8 @@ El Visor de Planos SAF permite visualizar planos en PDF y anotarlos (marcas) con
 | Vite 5 + TypeScript | Build y bundling de la SPA. |
 | Fabric.js 5.3 | Capa de anotaciones sobre el plano. |
 | PDF.js 3.11 | Render del PDF. |
+| That Open Engine 3.4 + three.js 0.184 | Visor del modelo 3D (`@thatopen/components`, `@thatopen/components-front`, `@thatopen/fragments`). |
+| web-ifc 0.0.77 | Lector de IFC (WebAssembly). Versión fija: debe coincidir con la que espera `@thatopen/components`. |
 | WebSocket nativo | Colaboración en vivo (cliente y servidor, sin dependencias npm). |
 | Node.js + systemd | Microservicio de colaboración. |
 | nginx | Sirve los estáticos y hace de proxy hacia ORDS y el WebSocket. |
@@ -29,20 +31,30 @@ El Visor de Planos SAF permite visualizar planos en PDF y anotarlos (marcas) con
 ### Estructura
 
 ```
-src/main.ts                         Orquestador
-src/core/pdf-renderer.ts            Render PDF.js + diagnóstico de fallos
-src/core/markup-layer.ts            Anotaciones Fabric.js
-src/core/collab.ts                  Cliente WebSocket
-src/core/scale-manager.ts           Calibración de escala
-src/config.ts                       Endpoints (VITE_*)
-src/ui/icons.ts                     Iconos embebidos
-src/styles/viewer.css               Tema tokenizado
+src/main.ts                         Entrada del visor de planos (/): compone los dominios
+src/main-modelo.ts                  Entrada del visor del modelo 3D (/modelo/)
+modelo/index.html                   Página del visor 3D
+src/plano/                          Abrir, renderizar, navegar y rotar el PDF (pdf-renderer, plan-viewer)
+src/anotaciones/                    Lienzo Fabric.js (lienzo/markup-layer + mixins), herramientas, panel, adjuntos
+src/mediciones/                     Escala, calibración, cotas/áreas
+src/rfi/                            Nubes y sellos RFI
+src/hipervinculos/                  Enlaces entre planos
+src/revisiones/                     Comparación de revisiones
+src/modelo-3d/                      Visor del modelo 3D (model-viewer, bim-engine = That Open, models-api)
+src/colaboracion/                   Colaboración en vivo (cliente WebSocket, capas ajenas, presencia)
+src/persistencia/                   Marcas/escala/rotación en ORDS, exportación JSON
+src/exportacion/                    PDF con/sin marcas, captura por selección
+src/integracion-apex/               Puente postMessage con APEX
+src/usuario/                        Identidad, permisos, color por autor
+src/compartido/                     UI y utilidades sin dominio
+src/app/                            Configuración (VITE_*), atajos, orden del CSS
 server/realtime/collab-server.js    Microservicio WS
 server/realtime/saf-collab.service  Unidad systemd
 server/nginx-prod.conf              vhost de nginx
 server/sql/ords_markup.sql          Handlers ORDS (marcas)
 server/sql/ords_planos_lov.sql      Handler ORDS (listado de planos)
 scripts/deploy.sh                   Despliegue
+scripts/copy-web-ifc.mjs            Copia el .wasm de web-ifc a public/web-ifc/<versión>/ (predev/prebuild)
 scripts/diag-ords.sh                Diagnóstico de la API
 docs/Apex-Configuracion.js          Código de integración del lado APEX
 docs/DESPLIEGUE.md                  Guía operativa de despliegue
@@ -88,6 +100,54 @@ Cambiar solo el primero produce planos equivocados o "Invalid PDF structure". Ca
 
 El código completo del lado APEX, comentado y listo para pegar, está en **`docs/Apex-Configuracion.js`**. Va en la página APEX → JavaScript → *Function and Global Variable Declaration*.
 
+### 4.0 Dos páginas: planos (2D) y modelo (3D)
+
+| URL | Qué muestra | Entrada |
+|---|---|---|
+| `/` | Visor de planos (PDF): marcas, RFI, hipervínculos, comparación… | `index.html` → `src/main.ts` |
+| `/modelo/` | Visor del modelo 3D (IFC / `.frag`) | `modelo/index.html` → `src/main-modelo.ts` |
+
+Las dos aceptan los mismos parámetros de URL y el mismo `init` de APEX. En `/modelo/` el modelo llega:
+
+| Cómo | Qué hace |
+|---|---|
+| **Abrir IFC** (o el botón del estado vacío) | Abre un `.ifc` / `.frag` de la computadora. Se procesa en el navegador; **no se sube al servidor**. |
+| Arrastrar un `.ifc` a la página | Lo mismo. |
+| APEX (`init` / `openModel` con el `repoId` del `.ifc`) | Lo pide al endpoint `documento` del repositorio. |
+
+**Herramientas del visor 3D.** La interfaz sigue la del visor de planos: la barra superior tiene las acciones (Abrir IFC, paneles, vistas, Cerrar) y el **riel flotante** —el mismo componente, arrastrable y con orientación vertical u horizontal— las herramientas.
+
+| Herramienta | Uso |
+|---|---|
+| **Edificio** (panel izquierdo) | Elementos por **nivel** y por **tipo** (muros, losas, columnas…). Ojo: ocultar/mostrar · nombre: seleccionar y encuadrar · **Aislar**: ver sólo ese grupo · **Mostrar todo**. |
+| **Propiedades** (panel derecho) | Al seleccionar un elemento: tipo, nombre, código, nivel, material y los conjuntos de propiedades y cantidades del IFC. |
+| **Seleccionar** (V) | Clic: un elemento · Mayús+clic: sumar · doble clic: acercarse · Esc: limpiar. |
+| **Medir** (grupo del riel) | Distancia · área de una cara · área por puntos (Enter cierra) · volumen de elementos (Enter calcula). En metros reales, sin calibrar. El botón repite la última medición; el triángulo abre el menú. Esc vuelve a Seleccionar. |
+| **Corte** | Doble clic sobre una superficie corta el modelo ahí; las flechas del plano lo mueven. |
+| Papelera | Borra todas las medidas y cortes. Supr borra sólo el que está bajo el cursor. |
+
+**Rendimiento: IFC frente a .frag.** El visor abre el formato fragments (`.frag`). Un IFC hay que convertirlo antes, y eso es lo lento: un modelo de Revit de 126 MB tarda ~5 min en convertirse y su `.frag` (37 MB) abre en ~4 s. Como hace Autodesk con sus modelos, lo recomendable es **convertir una vez al subir el IFC** y que la API entregue el `.frag`:
+
+```bash
+npm run convertir-ifc -- modelo.ifc            # genera modelo.frag al lado
+```
+
+Cuando el visor sí recibe un IFC (archivo local, o un IFC del repositorio):
+
+| Qué hace | Para qué |
+|---|---|
+| Lo convierte en un Web Worker (`bim-convert.worker.ts`) | La página no se congela; muestra fase y tiempo transcurrido. |
+| Guarda el `.frag` en la caché del navegador (IndexedDB, los 5 más recientes) | La siguiente vez el mismo archivo abre en segundos (y del repositorio ni se descarga). |
+| Botón **.frag** de la barra | Descarga el modelo ya convertido, para guardarlo en el repositorio. |
+
+**Licencias de terceros.** `scripts/third-party-licenses.mjs` genera `public/THIRD_PARTY_LICENSES.txt` antes de cada `dev` y `build`, con el aviso y el texto de licencia de cada dependencia de producción (MIT, ISC, Apache-2.0, MPL-2.0…). Los dos visores lo muestran con el enlace **Licencias** de la esquina inferior derecha. El logo de That Open sobre la vista 3D está apagado (`showLogo = false`): su licencia MIT no lo exige.
+
+La consola indica de dónde salió cada modelo: `[SAF] modelo 3D «…» desde la caché del navegador` / `desde el archivo de origen`.
+
+Los números de las propiedades se muestran tal como vienen en el IFC, en las unidades del modelo (un largo de 3800 suele ser milímetros). Las mediciones, en cambio, siempre salen en metros.
+
+Si una página recibe un archivo de la otra (un `.ifc` en `/`, un PDF en `/modelo/`), navega sola a la correcta y conserva usuario, proyecto y permiso. nginx no necesita reglas nuevas: `try_files $uri $uri/ /index.html` ya sirve `/modelo/`.
+
 ### 4.1 Parámetros de la URL del iframe
 
 Alternativa al `postMessage`, útil para pruebas.
@@ -96,8 +156,9 @@ Alternativa al `postMessage`, útil para pruebas.
 |---|---|
 | `usuario_conectado` | Nombre del usuario. Alternativas: `usuario`, `user`, `nombreUsuario`. |
 | `codigo_usuario` | Id numérico → `USUARIO_GRABACION`. Alternativas: `usuario_id`, `id_usuario`. |
-| `repoId` | `id_en_repositorio` del PDF (sala de colaboración y clave de guardado). |
-| `nombre` | `nombre_archivo` del PDF. |
+| `repoId` | `id_en_repositorio` del PDF (sala de colaboración y clave de guardado) o del modelo 3D. |
+| `nombre` | `nombre_archivo`. Un `.ifc` / `.frag` en `/` se pasa solo a `/modelo/`. |
+| `modelo` | En `/modelo/`: URL directa de un modelo 3D (pruebas). |
 | `codigo_proyecto` | Filtra los listados de planos y de RFI. |
 | `id_revision` | Revisión del plano. |
 | `P0_PERMISO_COLABORADOR` | `1` → puede guardar marcas y descargar. |
@@ -118,10 +179,11 @@ https://planos.aicsacorp.com/?usuario_conectado=CARLOS&codigo_usuario=173&repoId
 |---|---|---|
 | `init` | `usuario_conectado`, `codigo_usuario`, `repoId`, `nombre`, `codigo_proyecto`, `id_revision`, `P0_PERMISO_COLABORADOR` | Mensaje consolidado: identidad, proyecto, permisos y abrir el plano. **Es el que se usa.** |
 | `setUser` | `name`, `codigo` | Solo identidad (alternativa a la URL). |
-| `openPDF` | `repoId` o `pdfUrl`, `docId`, `name` | Abrir un plano sin tocar la identidad. |
+| `openPDF` | `repoId` o `pdfUrl`, `docId`, `name` | Abrir un plano sin tocar la identidad. Un `name` `.ifc` / `.frag` pasa a `/modelo/`. |
+| `openModel` | `repoId` o `modelUrl`, `nombre` | Abrir un modelo 3D (en `/` pasa a `/modelo/`). |
 | `setLinkTarget` | `repoId`, `name`, `file` | Respuesta de APEX al selector "elegir plano destino" de un hipervínculo. |
 
-`codigo_proyecto` y `P0_PERMISO_COLABORADOR` se aplican desde **cualquier** mensaje, no solo desde `init`.
+`codigo_proyecto` y `P0_PERMISO_COLABORADOR` se aplican desde **cualquier** mensaje, no solo desde `init`. `init` también acepta `modelUrl`; con un `nombre` `.ifc` en `/`, el visor pasa a `/modelo/`.
 
 **Visor → APEX**
 
@@ -157,7 +219,7 @@ Base: `/ords/safws` (relativa; nginx la reenvía al ORDS real).
 
 | Método / Ruta | Descripción |
 |---|---|
-| `GET planos-hub/documento` | Devuelve el PDF (BLOB). El `id` y el `nombre` van como **HTTP HEADERS**, no en la URL. |
+| `GET planos-hub/documento` | Devuelve el archivo (BLOB): el PDF o el modelo IFC / `.frag`. El `id` y el `nombre` van como **HTTP HEADERS**, no en la URL. Para los modelos se usa el mismo endpoint (`API_MODELO` en `app/config.ts`): el handler debe entregar el archivo tal cual, sin forzar `application/pdf` ni convertirlo. |
 | `POST planos-hub/markup` | Guarda (MERGE) la capa del usuario. Header `id`; body `{usuario, usuario_id, id_revision, sesion}`. |
 | `GET planos-hub/markup` | Devuelve `{ capas: [{usuario, usuario_id, sesion}] }`. Header `id`. |
 | `GET planos-hub/planos-listado` | Listado de planos para el hipervínculo. Header `id` para excluir el plano actual. |
@@ -197,18 +259,18 @@ Tablas relacionadas: `DRW_REVISIONES_PLANO` (revisiones) y `GESTION_DOCUMENTAL_C
 
 ### 7.1 Qué es y qué NO es
 
-Esta es la confusión más cara del proyecto, porque el nombre de los archivos engaña:
+Fue la confusión más cara del proyecto (la persistencia vivía en un archivo llamado `collab-sync`). Desde la v2.1 cada camino está en su carpeta:
 
 | Módulo | Transporte | Qué hace |
 |---|---|---|
-| `core/collab.ts` | WebSocket | **Solo efímero**: cursores, deltas en vivo, presencia, difusión inmediata de la escala. No persiste nada. |
-| `features/collab-sync.ts` | HTTP → ORDS | **La capa de persistencia**: `saveNow`, `saveScaleNow`, `saveObjectsNow`, `loadFromServer`. Pese al nombre, es lo que hace que las marcas y la escala sobrevivan. |
+| `colaboracion/collab.ts` + `collab-sync.ts` | WebSocket | **Solo efímero**: cursores, deltas en vivo, presencia, difusión inmediata de la escala. No persiste nada. |
+| `persistencia/markup-store.ts` | HTTP → ORDS | **La capa de persistencia**: `saveNow`, `saveScaleNow`, `saveObjectsNow`, `loadFromServer`. Es lo que hace que las marcas y la escala sobrevivan. |
 
 Consecuencia práctica: **la calibración de escala no depende del WebSocket**. Al calibrar se disparan dos caminos independientes — `broadcastScale()` por WebSocket (para quien esté mirando ahora) y `saveScaleNow()` por HTTP contra ORDS (lo que la hace perdurar). Al abrir un plano, la escala se restaura desde ORDS.
 
 Con el flag apagado se pierde solo: cursores ajenos, ver marcas de otros mientras dibujan, propagación instantánea de la escala y el panel de colaboradores. Se conserva todo lo persistente.
 
-**Si algún día se decide eliminar la colaboración, NO se debe borrar `collab-sync.ts`**: dejaría el visor sin guardado ni carga. Lo que se quitaría es `core/collab.ts`, el microservicio y el `location /rt/` de nginx.
+**Si algún día se decide eliminar la colaboración**, se quita la carpeta `colaboracion/`, el microservicio y el `location /rt/` de nginx. `persistencia/` no depende del WebSocket y sigue funcionando.
 
 ### 7.2 El microservicio
 
@@ -325,6 +387,22 @@ server {
         proxy_read_timeout 3600s;
     }
 
+    # Modelo 3D: WebAssembly de web-ifc y worker de fragments. Con el tipo
+    # equivocado el navegador los rechaza y el modelo no carga.
+    location ~* \.wasm$ {
+        types { application/wasm wasm; }
+        gzip on; gzip_types application/wasm;
+        expires 1y;                       # la carpeta lleva la versión: /web-ifc/0.0.77/
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+    location ~* \.mjs$ {
+        types { application/javascript mjs; }
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -332,6 +410,8 @@ server {
 ```
 
 El vhost completo está en `server/nginx-prod.conf`.
+
+**Modelo 3D.** Además de los tipos de `.wasm` y `.mjs`, si `security-headers.inc` define una `Content-Security-Policy`, debe incluir `'wasm-unsafe-eval'` en `script-src` y `worker-src 'self' blob:`. El worker y el `.wasm` se sirven desde el propio visor (nunca desde unpkg), así que son compatibles con `Cross-Origin-Embedder-Policy: require-corp`.
 
 ### 9.5 Permisos y SELinux
 
@@ -373,7 +453,18 @@ Causas frecuentes de un 200 que no es PDF:
 - Falta `underscores_in_headers on;` → el handler recibe `:id` NULL y devuelve cuerpo vacío con status 200.
 - Ese ID no existe en la base de ese ORDS.
 
-### 10.2 Otros síntomas
+### 10.2 No carga el modelo 3D
+
+| Síntoma (consola del navegador) | Causa / Solución |
+|---|---|
+| `Incorrect response MIME type. Expected 'application/wasm'` | nginx no mapea `.wasm` (§9.4). |
+| `Failed to load module script … MIME type` en `worker-*.mjs` | nginx no mapea `.mjs` (§9.4). |
+| `WebAssembly.instantiate(): Refused to compile` | La CSP no permite WebAssembly: falta `'wasm-unsafe-eval'`. |
+| 404 en `/web-ifc/<versión>/web-ifc.wasm` | El build no copió el `.wasm`: `npm run build` lo hace solo (prebuild); revisa que `dist/web-ifc/` se suba. |
+| Aviso "no devolvió un modelo, sino una página de error" | El endpoint `documento` devolvió HTML (login de APEX, error de ORDS) en vez del archivo. |
+| El proceso se queda en "Procesando… 0 %" | web-ifc arrancó en modo multihilo. `bim-engine.ts` lo fuerza a un solo hilo; si se actualiza web-ifc o That Open, comprobar que ese parche sigue aplicando. |
+
+### 10.3 Otros síntomas
 
 | Síntoma | Causa / Solución |
 |---|---|
@@ -384,4 +475,3 @@ Causas frecuentes de un 200 que no es PDF:
 | `saf-collab` no arranca | `ssh ... 'journalctl -u saf-collab -n 30 --no-pager'` |
 | Puerto 3100 ocupado (EADDRINUSE) | Proceso node huérfano: matarlo y reiniciar el servicio. |
 | Pide la contraseña varias veces | Multiplexación SSH (`ControlPath` en `~/.ssh`). |
-| `npm run typecheck` falla | Conocido y preexistente: `markup-layer.ts` y `main.ts` son JavaScript en archivos `.ts` sin campos de clase declarados. No bloquea el build. |

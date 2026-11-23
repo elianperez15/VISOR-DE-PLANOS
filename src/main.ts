@@ -1,1930 +1,317 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   main.ts — Orquestador SAF Visor de Planos  (PDF.js + Fabric.js)
+   main.ts — Punto de entrada del Visor de Planos SAF (PDF.js + Fabric.js)
 
-   Este archivo cablea los módulos y mantiene el estado de la sesión. La
-   lógica reutilizable/independiente vive en módulos aparte:
+   Sólo COMPONE el visor: crea los módulos de cada dominio, los conecta entre
+   sí por sus `ctx` y arranca. La lógica vive en cada carpeta de dominio:
 
-     core/pdf-renderer   · render del PDF
-     core/markup-layer   · capa de anotaciones (Fabric)
-     core/collab         · cliente WebSocket de colaboración
-     core/scale-manager  · calibración de escala
-     core/user-colors    · color determinístico por autor
-     ui/tool-defs        · catálogos de herramientas y tipos de anotación
-     ui/dropdowns        · menús desplegables / flyouts
-     ui/rail-drag        · riel flotante arrastrable
-     ui/color-utils      · conversión de colores (panel apariencia)
-     ui/image-utils      · optimización de imágenes adjuntas
-     ui/icons            · iconos embebidos
-     features/collab-sync       · colaboración tiempo real + persistencia ORDS
-     features/properties-panel  · panel de propiedades de la anotación
-     features/list-picker       · modal genérico con buscador (planos · RFIs)
-     features/compare-revisions · comparación de revisiones (overlay)
-     config              · endpoints (VITE_*)
-
-   Secciones de este archivo (en orden):
-     1.  Instancias y estado          8.  Calibración de escala
-     2.  Refs DOM + loader            9.  Panel de propiedades + adjuntos
-     3.  Herramientas / initMarkup    10. Usuarios / presencia / tooltip
-     4.  Colaboración en tiempo real  11. Selector de plano (hipervínculo)
-     5.  Carga de PDF                 12. Arranque (wiring de eventos)
-     6.  Navegación / comparación     13. Utilidades UI
-     7.  Sesión JSON / XFDF           14. Bootstrap (URL params / postMessage)
+     plano/              abrir, renderizar, navegar y rotar el PDF
+     anotaciones/        lienzo de marcas, herramientas, panel de propiedades, adjuntos
+     mediciones/         escala, calibración, resultado de áreas
+     rfi/                RFIs vinculados a nubes y sellos
+     hipervinculos/      enlaces de un plano a otro
+     revisiones/         comparación de revisiones
+     modelo-3d/          visor del modelo 3D (otra página: /modelo/, ver main-modelo.ts)
+     colaboracion/       colaboración en vivo (WebSocket), colaboradores, autoría
+     persistencia/       marcas en Oracle vía ORDS, exportación de la sesión
+     exportacion/        descarga en PDF, captura por selección
+     integracion-apex/   puente postMessage con la página APEX
+     usuario/            identidad, permisos y color por usuario
+     compartido/         UI y utilidades sin dominio
+     app/                configuración y atajos de teclado
    ═══════════════════════════════════════════════════════════════════════ */
+import './app/styles.css';
 
-import './styles/viewer.css';
+import { initKeyboardShortcuts } from './app/keyboard-shortcuts';
+import { createConfirm } from './compartido/ui/confirm';
+import { initDropdowns } from './compartido/ui/dropdowns';
+import { showHint } from './compartido/ui/hint';
+import { renderIcons } from './compartido/ui/icons';
+import { initLicensesLink } from './compartido/ui/licenses';
+import { initRailDrag } from './compartido/ui/rail-drag';
+import { listenToApex, type OpenPlanoRequest } from './integracion-apex/apex-bridge';
+import { initCloseViewer } from './integracion-apex/close-viewer';
+import { createIdentity } from './usuario/identity';
+import { createPlanViewer } from './plano/plan-viewer';
+import { hideViewerNotice, scheduleViewerNotice } from './plano/viewer-notice';
+import { MarkupLayer } from './anotaciones/lienzo/markup-layer';
+import { createAttachments } from './anotaciones/attachments';
+import { createPropertiesPanel } from './anotaciones/properties-panel';
+import { createStampPicker } from './anotaciones/stamp-picker';
+import { createToolbar } from './anotaciones/toolbar';
+import { initAreaPanel, hideAreaResult, showAreaResult } from './mediciones/area-panel';
+import { createCalibration } from './mediciones/calibration';
+import { ScaleManager } from './mediciones/scale-manager';
+import { createRfi } from './rfi/rfi';
+import { createPlanLinks } from './hipervinculos/plan-links';
+import { createCompareRevisions } from './revisiones/compare-revisions';
+import { showAuthorTooltip } from './colaboracion/author-tooltip';
+import { Collab } from './colaboracion/collab';
+import { createCollabSync } from './colaboracion/collab-sync';
+import { createCollaboratorsPanel } from './colaboracion/collaborators-panel';
+import { createMarkupStore } from './persistencia/markup-store';
+import { initSaveMarks } from './persistencia/save-marks';
+import { exportSessionFile } from './persistencia/session-file';
+import { createExportPdf } from './exportacion/export-pdf';
+import { createRegionSnapshot } from './exportacion/region-snapshot';
+import { isModelFile } from './modelo-3d/models-api';
+import { handOff, VISOR_MODELO_PATH } from './app/viewer-routes';
 
-import { PDFRenderer } from './core/pdf-renderer';
-import { ScaleManager } from './core/scale-manager';
-import { MarkupLayer } from './core/markup-layer';
-import { Storage } from './data/storage';
-import { XFDFConverter } from './data/xfdf';
-import { Collab } from './core/collab';
-import { API_PDF, APEX_ORIGIN, API_RFI, APEX_RFI_PAGE, API_PLANOS } from './config';
+/* ── Estado compartido ───────────────────────────────────────────────── */
+const confirm      = createConfirm();
+const scaleManager = new ScaleManager();
+let   markup: MarkupLayer | null = null;   // lienzo de marcas del documento abierto
+const getMarkup    = () => markup;
 
-// Iconos line-style (estilo Lucide) embebidos localmente — sin dependencia ni CDN
-import { renderIcons } from './ui/icons';
+/* ── Dominios ────────────────────────────────────────────────────────── */
+const identity = createIdentity({
+  onUserChange: name => {
+    if (markup) markup.currentUser = name;
+    collabSync.reannounce(name);
+  },
+});
 
-// Módulos de UI / datos extraídos (lógica cohesiva separada del orquestador)
-import { ANNOT_TOOLS, MEASURE_TOOLS, TOOL_HINTS, ANNOT_TYPES } from './ui/tool-defs';
-import { getUserColor } from './core/user-colors';
-import { closeAllDropdowns, initDropdowns } from './ui/dropdowns';
-import { initRailDrag } from './ui/rail-drag';
-import { createConfirm } from './ui/confirm';
-import { colorToHex, extractFillAlpha, hexToRgba } from './ui/color-utils';
-import { downscaleImage } from './ui/image-utils';
-import { createCollabSync } from './features/collab-sync';
-import { createPropertiesPanel } from './features/properties-panel';
-import { createCompareRevisions } from './features/compare-revisions';
-import { createRegionSnapshot } from './features/region-snapshot';
-import { createExportPdf } from './features/export-pdf';
-import { createListPicker } from './features/list-picker';
+const plan = createPlanViewer({
+  createMarkup,
+  getMarkup,
+  onDocumentClosing : () => { collabSync.reset(); markupStore.reset(); compare.close(); },
+  onDocumentOpened  : () => {
+    // Conectar PRIMERO a la sala (cursores y cambios en vivo), luego traer las
+    // capas ya guardadas sin bloquear la conexión.
+    collabSync.start();
+    markupStore.loadFromServer();
+  },
+  onBeforePageChange: () => regionSnapshot.cancel(),   // un recorte a medias no sobrevive al cambio de página
+  onBeforeShowPage  : () => panel.closeIfOpen(),
+  onPageShown       : n => { collabSync.onPageShown(n); collaborators.render(); compare.onPageChange(n); },
+  onRotated         : () => collabSync.pushLocalLayer(),   // sincroniza en vivo (no persiste)
+});
+const { session } = plan;
 
-(function () {
-  'use strict';
+const collabSync = createCollabSync({
+  collab         : new Collab(),
+  getMarkup,
+  getSession     : () => session,
+  getCurrentPage : plan.getCurrentPage,
+  getUser        : () => identity.name,
+  onPresence     : () => collaborators.render(),
+  onScaleReceived: scale => calibration.applyScaleFromSession(scale),
+});
 
-  /* ── Constantes de configuración ───────────────────────────────────── */
-  const CURSOR_THROTTLE_MS    = 50;                // mínimo entre envíos de cursor
-  const PDF_RENDER_SUPERSAMPLE = 3.0;              // factor de supermuestreo al rasterizar PDF
-  const MAX_ATTACHMENT_BYTES  = 25 * 1024 * 1024;  // 25 MB por adjunto
-  const ATTACHMENT_MAX_DIM    = 1920;              // px máximos al redimensionar imágenes
-  const ATTACHMENT_JPEG_QUALITY      = 0.82;       // calidad al pegar/soltar imagen
-  const ATTACHMENT_JPEG_QUALITY_FILE = 0.85;       // calidad al adjuntar desde archivo
-  const HINT_AUTO_HIDE_MS     = 5000;              // tiempo visible de los hints
+const collaborators = createCollaboratorsPanel({
+  getMarkup,
+  getUser : () => identity.name,
+  presence: collabSync.presence,
+});
 
-  /* ── Instancias ────────────────────────────────────────────────────── */
-  const pdfRenderer     = new PDFRenderer();
-  const scaleManager    = new ScaleManager();
-  const storage         = new Storage();
-  const collab          = new Collab();
-  const confirmDialog   = createConfirm();   // modal de confirmación reutilizable
-  let   markup          = null;
+const markupStore = createMarkupStore({
+  getMarkup,
+  getSession              : () => session,
+  getCurrentPage          : plan.getCurrentPage,
+  getUser                 : () => identity.name,
+  getUserId               : () => identity.userId,
+  getRevId                : () => identity.revId,
+  storeRemoteLayer        : (page, author, json) => collabSync.storeRemoteLayer(page, author, json),
+  applyRemoteLayersForPage: page => collabSync.applyRemoteLayersForPage(page),
+  onRotationLoaded        : deg => plan.applySavedRotation(deg),
+  onScaleLoaded           : scale => calibration.applyScaleFromSession(scale),
+});
 
-  let   lastCursorSentAt = 0;   // throttle del envío de cursor (mouse:move)
+const toolbar = createToolbar({
+  getMarkup,
+  confirm,
+  onBeforeActivate: () => rfi.onToolChange(),   // cambiar de herramienta cancela el modo Nube RFI
+  onMyMarksCleared: () => {
+    session.pages[plan.getCurrentPage()] = markup.getMarkupJSON();
+    collabSync.pushLocalLayer();   // sincroniza en vivo; el borrado se guarda al pulsar «Guardar»
+    hideAreaResult();
+  },
+});
+const activateTool = (tool: string) => toolbar.activateTool(tool);
 
-  /* ── Presencia: usuarios conectados a la sala  id(socket) → {user,color}.
-     Lo escribe collab-sync y lo lee buildUsersPanel (compartido por referencia). */
-  const presenceByUser = new Map();
+const panel       = createPropertiesPanel({ getMarkup });
+const stamps      = createStampPicker({ getMarkup, activateTool });
+const attachments = createAttachments({ getMarkup, panel, activateTool, confirm });
 
-  /* ── Estado ───────────────────────────────────────────────────────── */
-  const session = { docId:null, docName:'', pages:{}, pageHeights:{}, scale:null, rotation:0 };
-  let currentPage   = 1;
-  let totalPages    = 0;
-  let markupVisible = true;
-  let rotation      = 0;    // giro de vista temporal (en memoria): 0 | 90 | 180 | 270
+const calibration = createCalibration({
+  scaleManager,
+  getMarkup,
+  getSession    : () => session,
+  activateTool,
+  broadcastScale: scale => collabSync.broadcastScale(scale),
+  saveScale     : () => markupStore.saveScaleNow(),
+});
 
-  /* ── Refs DOM ─────────────────────────────────────────────────────── */
-  const $ = id => document.getElementById(id);
-  const ui = {
-    sessionInput : $('session-input'),
-    xfdfInput    : $('xfdf-input'),
-    btnSave      : $('btn-save'),
-    btnLoad      : $('btn-load'),
-    btnXfdfSave  : $('btn-xfdf-save'),
-    btnXfdfLoad  : $('btn-xfdf-load'),
-    btnRotateLeft : $('btn-rotate-left'),
-    btnRotateRight: $('btn-rotate-right'),
-    zoomInfo     : $('zoom-info'),
-    btnZoomIn    : $('btn-zoom-in'),
-    btnZoomOut   : $('btn-zoom-out'),
-    btnFit       : $('btn-fit'),
-    tbStatus     : $('tb-status'),
-    btnUndo      : $('btn-undo'),
-    btnRedo      : $('btn-redo'),
-    btnToggle    : $('btn-toggle-markup'),
-    btnCalibrate : $('btn-calibrate'),
-    btnClear     : $('btn-clear'),
-    btnExportPng : $('btn-export-png'),
-    strokeColor  : $('stroke-color'),
-    fillColor    : $('fill-color'),
-    fillAlpha    : $('fill-alpha'),
-    fillAlphaVal : $('fill-alpha-val'),
-    strokeWidth  : $('stroke-width'),
-    fontSize     : $('font-size'),
-    canvasWrapper: $('canvas-wrapper'),
-    drawHint     : $('draw-hint'),
-    saveToast    : $('save-toast'),
-    saveToastIc  : $('save-toast-ic'),
-    saveToastMsg : $('save-toast-msg'),
-    areaPanel    : $('area-panel'),
-    areaValue    : $('area-value'),
-    // Calibración
-    modalCal        : $('modal-calibrate'),
-    calStep1        : $('cal-step-1'),
-    calStep2        : $('cal-step-2'),
-    calStep3        : $('cal-step-3'),
-    calPxHint       : $('cal-px-hint'),
-    calValue        : $('cal-value'),
-    calUnit         : $('cal-unit'),
-    btnCalApply     : $('btn-cal-apply'),
-    btnCalCancel    : $('btn-cal-cancel'),
-    btnCalTabPoints : $('btn-cal-tab-points'),
-    btnCalTabDirect : $('btn-cal-tab-direct'),
-    calModePoints   : $('cal-mode-points'),
-    calModeDirect   : $('cal-mode-direct'),
-    calPxDirect     : $('cal-px-direct'),
-    calValDirect    : $('cal-val-direct'),
-    calUnitDirect   : $('cal-unit-direct'),
-    calDirectPreview: $('cal-direct-preview'),
-    calSteps        : $('cal-steps'),
-    calResult       : $('cal-result'),
-    calResultValue  : $('cal-result-value'),
-    btnCalReset     : $('btn-cal-reset'),
-    // Sello
-    modalStamp    : $('modal-stamp'),
-    btnStampCancel: $('btn-stamp-cancel'),
-    // Grupos de herramientas
-    btnAnnotGroup  : $('btn-annot-group'),
-    btnMeasureGroup: $('btn-measure-group'),
-    // Panel de propiedades
-    btnTogglePanel: $('btn-toggle-panel'),
-    // Usuarios
-    userDot      : $('user-dot'),
-    userNameLabel: $('user-name-label'),
-    authorsList  : $('authors-list'),
-    annotTooltip : $('annot-tooltip'),
-    planoLoader     : $('plano-loader'),
-    planoLoaderText : $('plano-loader-text'),
-    notice       : $('viewer-notice'),
-    noticeTitle  : $('viewer-notice-title'),
-    noticeDetail : $('viewer-notice-detail'),
-    noticeTech   : $('viewer-notice-tech'),
-    noticeTechTxt: $('viewer-notice-tech-text'),
-  };
+const rfi = createRfi({
+  getMarkup,
+  getActive     : () => panel.getActive(),
+  getSession    : () => session,
+  getCurrentPage: plan.getCurrentPage,
+  getProjectCode: () => identity.projectCode,
+  activateTool,
+  confirm,
+  pushLocalLayer: () => collabSync.pushLocalLayer(),
+  saveObjectsNow: (page, objs) => markupStore.saveObjectsNow(page, objs),
+});
 
-  let noticeTimer = null;   // espera antes de dar por hecho que no vendrá plano
+const links = createPlanLinks({
+  getMarkup,
+  getActive     : () => panel.getActive(),
+  getSession    : () => session,
+  getProjectCode: () => identity.projectCode,
+  getUserName   : () => identity.name,
+  getUserId     : () => identity.userId,
+  confirm,
+});
 
-  const NOTICE_DEFAULT = 'No se pudo cargar el archivo para su visualización';
+const regionSnapshot = createRegionSnapshot({
+  getMarkup,
+  isDocumentLoaded: () => plan.pdfRenderer.isLoaded,
+  defaultName     : () => `${(session.docName || 'plano').replace(/\.pdf$/i, '')}_captura_p${plan.getCurrentPage()}`,
+});
 
-  /**
-   * Muestra el aviso que ocupa el lienzo cuando no hay nada que enseñar.
-   * El visor sólo abre planos del file server, así que cuando no aparece ninguno
-   * hay que decir por qué.
-   *
-   * `reason` es la frase para el usuario; `technical` el volcado de diagnóstico,
-   * que va replegado. Separarlos importa: el diagnóstico de PDFRenderer llega a
-   * incluir el HTML que devolvió el servidor, y eso en pantalla no es un
-   * mensaje, es ruido.
-   */
-  function showViewerNotice(reason, technical) {
-    clearTimeout(noticeTimer);
-    if (!ui.notice) return;
-    if (ui.noticeTitle)  ui.noticeTitle.textContent  = NOTICE_DEFAULT;
-    if (ui.noticeDetail) ui.noticeDetail.textContent = reason || '';
-    if (ui.noticeTech) {
-      const hay = !!technical;
-      ui.noticeTech.hidden = !hay;
-      ui.noticeTech.open   = false;   // siempre plegado al aparecer
-      if (hay && ui.noticeTechTxt) ui.noticeTechTxt.textContent = technical;
-    }
-    ui.notice.style.display = 'flex';
-  }
+const compare = createCompareRevisions({
+  getMarkup,
+  getSession          : () => session,
+  getCurrentPage      : plan.getCurrentPage,
+  getTotalPages       : plan.getTotalPages,
+  pdfRenderer         : plan.pdfRenderer,
+  getRotation         : plan.getRotation,
+  getProjectCode      : () => identity.projectCode,
+  updateScaleBadge    : () => calibration.updateScaleBadge(),
+  startRegionSnapshot : baseName => regionSnapshot.start(baseName),
+  cancelRegionSnapshot: () => regionSnapshot.cancel(),
+});
 
-  /** Traduce el error de carga a (motivo legible, detalle técnico). */
-  function noticeFromError(e) {
-    const reason = e && e.pista
-      ? e.pista
-      : 'El documento no se pudo abrir. Vuelve a intentarlo en unos minutos.';
-    return [reason, (e && (e.tecnico || e.message)) || ''];
-  }
+const exportPdf = createExportPdf({
+  pdfRenderer   : plan.pdfRenderer,
+  getMarkup,
+  getSession    : () => session,
+  getCurrentPage: plan.getCurrentPage,
+  getTotalPages : plan.getTotalPages,
+  goToPage      : n => plan.goToPage(n),
+  canDownload   : () => identity.canCollaborate,
+});
 
-  function hideViewerNotice() {
-    clearTimeout(noticeTimer);
-    if (ui.notice) ui.notice.style.display = 'none';
-  }
-
-  /**
-   * Da un margen antes de avisar de que no hay plano: embebido en APEX, la
-   * petición llega por postMessage un instante después de cargar, y el aviso no
-   * debe parpadear encima del plano que está a punto de abrirse.
-   */
-  function scheduleViewerNotice(reason) {
-    if (window.parent === window) { showViewerNotice(reason); return; }
-    clearTimeout(noticeTimer);
-    noticeTimer = setTimeout(() => {
-      if (!pdfRenderer.isLoaded) showViewerNotice(reason);
-    }, 2500);
-  }
-
-  /** Muestra/oculta el loader de "cargando plano". */
-  function showPlanoLoader(msg) {
-    if (!ui.planoLoader) return;
-    if (ui.planoLoaderText && msg) ui.planoLoaderText.textContent = msg;
-    ui.planoLoader.style.display = 'flex';
-  }
-  function hidePlanoLoader() {
-    if (ui.planoLoader) ui.planoLoader.style.display = 'none';
-  }
-
-  /* ── RFI: selector (modal) + drawer en APEX ────────────────────────── */
-
-  // Cuando está activo, la próxima nube colocada abrirá la modal para vincular un RFI.
-  let pendingRfiCloud = false;
-  const RFI_CLOUD_COLOR = '#e1251b';   // rojo fijo de las nubes RFI
-
-  /** Selector de RFI — mismo modal/estilo que el de hipervínculos (list-picker). */
-  const rfiPicker = createListPicker({
-    ids: { modal: 'modal-rfi', search: 'rfi-search', list: 'rfi-list', close: 'btn-rfi-close' },
-    loadingText: 'Cargando RFIs…',
-    fetchItems: async () => {
-      const headers: any = {};
-      if (_codigoProyecto != null && String(_codigoProyecto).trim() !== '')
-        headers.codigo_proyecto = String(_codigoProyecto).trim();
-      const res = await fetch(API_RFI, { credentials: 'include', headers });
-      return res.ok ? ((await res.json()).items || []) : [];
-    },
-    toRow: (it) => ({
-      value: String(it.id ?? it.ID ?? ''),
-      label: String(it.display ?? it.DISPLAY ?? it.nombre ?? (it.id ?? '')),
-    }),
-    onPick: (target, id, label) => {
-      if (!target) return;
-      target.data = Object.assign(target.data || {}, { rfiId: id, rfiLabel: label });
-      if (activeAnnotationObject === target) $('ap-rfi-name').textContent = label;
-      // Nube RFI: colocar el SELLO de RFI (sin inclinación) dentro de la nube
-      if (target.data?.type === 'cloud' && markup) {
-        markup.setRfiCloudStamp(target, `RFI ${id}`);
-        collabSync.pushLocalLayer();   // sincroniza en vivo + vuelca la página a la sesión
-        // La nube RFI SÍ se guarda automáticamente al vincular (única excepción).
-        // Se persiste SOLO esta nube (+ su sello), sin arrastrar las demás
-        // figuras que el usuario aún no ha guardado con el botón Guardar.
-        const objs = markup.getObjectsJSONByCloudId(target.data.cloudId);
-        collabSync.saveObjectsNow(currentPage, objs).then(ok => {
-          showSaveToast(ok ? 'success' : 'error',
-            ok ? 'Nube RFI guardada' : 'No se pudo guardar la nube RFI', 3000);
-        });
-      } else {
-        markup && markup._snapshot();
-        markup && markup._notifyLocalChange && markup._notifyLocalChange();
-      }
-      openRfiDrawer(id);   // al elegir, abre el drawer
-    },
-    // Se cerró el selector SIN elegir → si era una nube RFI sin vincular, eliminarla
-    onCancel: (target) => {
-      if (target && target.data?.type === 'cloud' && target.data?.isRfi
-          && (target.data?.rfiId == null || String(target.data.rfiId).trim() === '')) {
-        markup && markup.removeCloud(target);
-      }
-    },
+/** Crea el lienzo de marcas de un documento recién abierto y lo conecta con los dominios. */
+function createMarkup(): MarkupLayer {
+  if (markup) markup.destroy();
+  markup = new MarkupLayer('fabric-canvas', { scaleManager });
+  markup.currentUser     = identity.name;
+  markup.onUndoChange    = toolbar.updateUndoButtons;
+  markup.onAutoSelect    = () => activateTool('select');   // vuelve a "Seleccionar" tras colocar una figura
+  markup.onHint          = msg => showHint(msg);
+  markup.onAreaReady     = showAreaResult;
+  markup.onStampPick     = stamps.open;
+  markup.onImagePick     = attachments.pickImageToPlace;
+  markup.onShowImage     = attachments.showImage;
+  markup.onAnnotClick    = obj => panel.open(obj);
+  markup.onAnnotHover    = showAuthorTooltip;
+  markup.onFollowLink    = links.follow;
+  markup.onLinkCreated   = links.onLinkCreated;
+  markup.onCloudCreated  = rfi.onCloudCreated;
+  markup.onStampDblClick = rfi.onStampDblClick;
+  markup.onLocalChange   = () => collabSync.pushLocalLayer();   // emitir la capa propia a la sala
+  markup.canvas.on('after:render', attachments.updateFigToolbar);   // mini-toolbar sobre la figura
+  // Si se elimina la figura abierta en el panel, cerrar el panel
+  markup.canvas.on('object:removed', (opt: any) => {
+    if (opt.target && opt.target === panel.getActive()) panel.close();
   });
+  collabSync.trackCursor(markup);
+  return markup;
+}
 
-  /** Avisa a APEX (padre) para abrir el drawer del RFI seleccionado (página 87490). */
-  function openRfiDrawer(rfiId) {
-    if (rfiId == null || String(rfiId).trim() === '') return;
-    const msg = {
-      action  : 'openRfi',
-      rfiId   : rfiId,                 // id del RFI elegido → lo recibe el drawer
-      apexPage: APEX_RFI_PAGE,         // página del drawer (87490)
-      repoId  : session.docId,         // id_en_repositorio del plano (por si lo necesita)
-      page    : currentPage,
-    };
-    try { if (window.parent !== window) window.parent.postMessage(msg, APEX_ORIGIN); } catch (e) {}
-    showHint('Abriendo RFI…');
+/** Abre el plano pedido por APEX (por id de repositorio o por URL directa). */
+/** Abre un plano PDF. Un modelo 3D (.ifc / .frag) se pasa al visor 3D (/modelo/). */
+function openPlano(req: OpenPlanoRequest) {
+  if (req.model || req.modelUrl || isModelFile(req.name) || isModelFile(req.pdfUrl)) {
+    handOff(VISOR_MODELO_PATH, req, identity);
+    return;
   }
+  hideViewerNotice();   // llega un plano: el aviso de "nada que mostrar" sobra
+  if (req.repoId != null) plan.openFromRepo(req.repoId, req.name);
+  else if (req.pdfUrl)    plan.openFromUrl(req.pdfUrl, req.docId, req.name);
+}
 
-  /** Abre la MISMA página de APEX pero para CREAR un RFI: va sin rfiId, sólo con
-      el contexto del plano (el drawer decide que es alta al no recibir el id). */
-  function openRfiCreate() {
-    const msg = {
-      action  : 'openRfi',
-      apexPage: APEX_RFI_PAGE,         // página del drawer (87490)
-      mode    : 'create',              // sin rfiId → alta de RFI
-      repoId  : session.docId,         // id_en_repositorio del plano (contexto)
-      page    : currentPage,
-    };
-    try { if (window.parent !== window) window.parent.postMessage(msg, APEX_ORIGIN); } catch (e) {}
-    showHint('Abriendo creación de RFI…');
-  }
+/* ── Arranque ────────────────────────────────────────────────────────── */
+renderIcons();
+initDropdowns();
+initRailDrag();
+initLicensesLink(document.getElementById('canvas-area'));
 
-  /** Doble clic en el sello RFI o en la nube RFI → abrir el drawer del RFI vinculado. */
-  function onRfiStampDblClick(data) {
-    const d = data || {};
-    const esRfi = String(d.label || '').toUpperCase() === 'RFI' || (d.type === 'cloud' && d.isRfi);
-    if (!esRfi) return;
-    if (d.rfiId) openRfiDrawer(d.rfiId);
-    else showHint('Selecciona el RFI en el panel de propiedades');
-  }
+exportPdf.init();
+initCloseViewer(confirm);
+initSaveMarks({
+  hasDocument: () => !!markup,
+  canSave    : () => identity.canCollaborate,
+  syncSession: () => {
+    const page = plan.getCurrentPage();
+    session.pages[page]       = markup.getMarkupJSON();
+    session.pageHeights[page] = markup.getPageHeight();
+    session.rotation          = plan.getRotation();
+    session.scale             = calibration.buildScaleObj();
+    return session;
+  },
+  saveNow: () => markupStore.saveNow(),
+});
 
+plan.init();
+toolbar.init();
+rfi.init();
+collaborators.init();
+calibration.init();
+initAreaPanel();
+compare.init();
+regionSnapshot.init();
+stamps.init();
+panel.init();
+links.init();
+confirm.init();
+attachments.init();
 
-  /* ── Activar herramienta ─────────────────────────────────────────── */
-  function activateTool(tool) {
+listenToApex({
+  onProjectCode  : code => identity.setProjectCode(code),
+  onPermission   : value => identity.setPermission(value),
+  onSetUser      : (name, code) => {
+    if (name) identity.setUser(name);
+    identity.setUserId(code, 'postMessage');
+  },
+  onInit         : ({ name, code, revId, plano }) => {
+    if (name) identity.setUser(name);
+    identity.setUserId(code, 'init');
+    identity.setRevId(revId);
+    if (plano) openPlano(plano);
+  },
+  onOpenPlano    : openPlano,
+  onSetLinkTarget: target => links.setTargetFromApex(target),
+});
+
+// Identidad y plano desde la URL del iframe:
+//   ?usuario_conectado=…&repoId=123                  (plano del repositorio; un .ifc/.frag pasa a /modelo/)
+//   ?usuario_conectado=…&pdf=/pdfs/p.pdf&docId=123   (URL directa de un PDF)
+const params = new URLSearchParams(window.location.search);
+identity.readFromUrl(params);
+const repoId   = params.get('repoId') || params.get('id_en_repositorio');
+const pdfParam = params.get('pdf');
+if (repoId || pdfParam) {
+  openPlano({ repoId: repoId || undefined, pdfUrl: pdfParam || undefined,
+              docId: params.get('docId') || undefined, name: params.get('nombre') || undefined });
+} else {
+  // Nadie ha pedido un plano. Embebido aún puede llegar por postMessage, así
+  // que el aviso espera un momento antes de aparecer.
+  scheduleViewerNotice('El visor no recibió ningún plano que mostrar. '
+    + 'Ábrelo desde el listado de planos del sistema.', () => plan.pdfRenderer.isLoaded);
+}
+
+initKeyboardShortcuts({
+  getMarkup,
+  isModalOpen  : () => calibration.isOpen() || stamps.isOpen(),
+  activateTool,
+  togglePanel  : () => panel.toggle(),
+  exportSession: () => {
     if (!markup) return;
-    pendingRfiCloud = false;   // cualquier cambio de herramienta cancela el modo Nube RFI
-    markup.setTool(tool);
-    closeAllDropdowns();
-
-    // Reset active
-    document.querySelectorAll('.tb-tool').forEach(b => b.classList.remove('tb-btn-active'));
-    document.querySelectorAll('.tb-tool-group-btn').forEach(b => b.classList.remove('tb-btn-active'));
-    $('btn-tool-cloud-rfi')?.classList.remove('tb-btn-active');   // botón Nube RFI (no es .tb-tool)
-    document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item')   // sus dos modos tampoco
-      .forEach(b => b.classList.remove('tb-btn-active'));
-
-    // Marcar el/los botones directos con esta herramienta (barra o items de menú)
-    document.querySelectorAll(`.tb-tool[data-tool="${tool}"]`)
-      .forEach(b => b.classList.add('tb-btn-active'));
-
-    // Si la herramienta vive dentro de un grupo (submenú del riel), reflejarla en
-    // el botón del grupo: icono + nombre + estado activo. Genérico para cualquier grupo.
-    const info = ANNOT_TOOLS[tool] || MEASURE_TOOLS[tool];
-    if (info) {
-      document.querySelectorAll(`.tb-dropdown .tb-tool[data-tool="${tool}"]`).forEach(item => {
-        const groupBtn = item.closest('.tb-dropdown-wrap')?.querySelector('.rail-group');
-        if (!groupBtn) return;
-        const gi = groupBtn.querySelector('.tool-gicon');
-        const gn = groupBtn.querySelector('.tool-gname');
-        if (gi) gi.innerHTML = `<i data-lucide="${info.lc}"></i>`;
-        if (gn) gn.textContent = info.name;
-        // Recordar la herramienta elegida: al hacer clic en el cuerpo del grupo
-        // (no en el caret) se vuelve a activar esta misma.
-        (groupBtn as HTMLElement).dataset.tool = tool;
-        groupBtn.classList.add('tb-btn-active');
-        renderIcons(groupBtn as HTMLElement);
-      });
-    }
-
-    showHint(TOOL_HINTS[tool] || '', true);
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     INIT CANVAS
-     ════════════════════════════════════════════════════════════════════ */
-  function initMarkup() {
-    if (markup) markup.destroy();
-    markup = new MarkupLayer('fabric-canvas', { scaleManager });
-    markup.onZoomChange  = z    => { ui.zoomInfo.textContent = `${Math.round(z*100)}%`; };
-    markup.onUndoChange  = (u,r) => { ui.btnUndo.disabled=!u; ui.btnRedo.disabled=!r; };
-    markup.onAreaReady   = lbl  => { ui.areaValue.textContent=lbl; ui.areaPanel.style.display='flex'; };
-    markup.onStampPick   = ()   => { ui.modalStamp.style.display='flex'; };
-    markup.onImagePick   = ()   => { const inp = $('img-place-input'); inp.value=''; inp.click(); };
-    markup.onHint        = msg  => showHint(msg);
-    markup.onAutoSelect  = ()   => activateTool('select'); // vuelve a select tras colocar nube
-    markup.onAnnotClick  = obj  => propsPanel.open(obj);
-    markup.onFollowLink  = data => {
-      const d = data || {};
-      if (d.targetRepoId != null && String(d.targetRepoId).trim() !== '') {
-        // Avisar a APEX (padre) para que ejecute su ajax callback y abra el plano.
-        // El iframe va en sandbox → no puede abrir pestañas ni usar apex.server.process;
-        // el padre sí. Le pasamos también una URL lista por si decide abrirla directo.
-        const p = new URLSearchParams();
-        p.set('repoId', String(d.targetRepoId));
-        if (d.targetFile) p.set('nombre', d.targetFile);
-        if (_currentUserName && _currentUserName !== 'Anónimo') p.set('usuario_conectado', _currentUserName);
-        if (_currentUserId != null) p.set('codigo_usuario', String(_currentUserId));
-        const url = window.location.origin + window.location.pathname + '?' + p.toString();
-
-        const msg = {
-          action : 'openPlano',
-          repoId : d.targetRepoId,
-          name   : d.targetName || null,
-          file   : d.targetFile || null,
-          url,
-        };
-        console.info('[SAF] openPlano →', msg);   // diagnóstico: qué se envía a APEX
-        // UN solo envío (dos causaban doble modal). El padre valida e.origin.
-        try { if (window.parent !== window) window.parent.postMessage(msg, APEX_ORIGIN); } catch (e) {}
-        showHint(`Abriendo ${d.targetName || ('plano ' + d.targetRepoId)}…`);
-        return;
-      }
-      showHint('Este enlace no tiene plano destino — selecciónalo y elige uno con "Elegir plano…"');
-    };
-    markup.onShowImage   = src  => { $('att-lightbox-img').src = src; $('att-lightbox').style.display = 'flex'; };
-    // Doble clic en un sello RFI → avisar a APEX para abrir su drawer de RFIs
-    markup.onStampDblClick = (data) => onRfiStampDblClick(data);
-    // Hipervínculo: al colocar el enlace, abrir de una vez el selector del plano
-    // destino (igual que la nube RFI). Se difiere un frame para que primero
-    // termine la colocación y el auto-select de la figura.
-    markup.onLinkCreated = (obj) => {
-      linkPickTarget = obj;      // también para el flujo por postMessage (APEX)
-      requestAnimationFrame(() => planoPicker.open(obj));
-    };
-    // Nube RFI: al colocar la nube en modo RFI, abrir la modal para vincular el RFI.
-    // Se difiere al siguiente frame para que primero termine la colocación y el
-    // auto-select de la nube; así la modal abre limpia y con foco en el buscador.
-    markup.onCloudCreated = (obj) => {
-      if (!pendingRfiCloud) return;
-      pendingRfiCloud = false;
-      obj.data = Object.assign(obj.data || {}, { isRfi: true });
-      obj.set({
-        stroke: RFI_CLOUD_COLOR,                 // color rojo fijo por defecto
-        lockScalingX: true, lockScalingY: true,  // tamaño protegido (no redimensionable)
-        lockMovementX: true, lockMovementY: true, // posición fija (no se puede mover)
-        lockRotation: true,
-        hasControls: false,                      // sin manijas de escala/rotación
-      });
-      markup.canvas.renderAll();
-      requestAnimationFrame(() => rfiPicker.open(obj));
-    };
-    // Colaboración: al cambiar la capa propia → emitir a la sala + persistir
-    markup.onLocalChange = ()   => collabSync.pushLocalLayer();
-    markup.canvas.on('after:render', updateFigToolbar);   // mini-toolbar sobre la figura
-    // Si se elimina la figura abierta en el panel, cerrar el panel de propiedades
-    markup.canvas.on('object:removed', opt => { if (opt.target && opt.target === activeAnnotationObject) propsPanel.close(); });
-    // Cursor en vivo: enviar posición lógica (throttle ~50ms)
-    markup.canvas.on('mouse:move', opt => {
-      if (!collab.connected) return;
-      const now = Date.now();
-      if (now - lastCursorSentAt < CURSOR_THROTTLE_MS) return;
-      lastCursorSentAt = now;
-      const p = markup.scenePointFromEvent(opt.e);
-      collab.sendCursor(currentPage, Math.round(p.x), Math.round(p.y));
-    });
-    markup.currentUser   = _currentUserName;
-    // Zoom profundo: re-render dinámico de la región visible (tipo Procore)
-    markup.requestRegion = (rect, density) => pdfRenderer.renderRegion(currentPage, rect, density, rotation);
-    initAnnotTooltip();
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     COLABORACIÓN EN TIEMPO REAL  →  feature ./features/collab-sync
-     El orquestador solo inyecta getters del estado y un callback de presencia.
-     ════════════════════════════════════════════════════════════════════ */
-  const collabSync = createCollabSync({
-    collab,
-    presence       : presenceByUser,                 // Map compartido (lo lee buildUsersPanel)
-    getMarkup      : () => markup,
-    getSession     : () => session,
-    getCurrentPage : () => currentPage,
-    getUser        : () => _currentUserName,
-    getUserId      : () => _currentUserId,
-    getRevId       : () => _currentRevId,
-    onPresence     : () => buildUsersPanel(),
-    // Restaura la orientación guardada: re-renderiza el fondo con esa rotación
-    // (las marcas ya vienen guardadas en ese espacio de coordenadas).
-    onRotationLoaded: (deg) => {
-      const target = ((deg % 360) + 360) % 360;
-      if (target === rotation) return;
-      rotation = target;
-      goToPage(currentPage);
-    },
-    // Restaura la escala calibrada guardada (pixeles / distancia_real / unidad).
-    onScaleLoaded: (scale) => applyScaleFromSession(scale),
-  });
-
-  /* ════════════════════════════════════════════════════════════════════
-     PDF
-     ════════════════════════════════════════════════════════════════════ */
-  /**
-   * Abre un PDF desde una URL (p.ej. /pdfs/plano-123.pdf servido por Nginx).
-   * Usado por la integración con APEX vía postMessage { action:'openPDF' }
-   * o por el parámetro ?pdf=...&docId=... en la URL del iframe.
-   */
-  async function openPDFFromUrl(url, docId, name, httpHeaders = null) {
-    if (!url) return;
-    setStatus('Cargando PDF…');
-    showPlanoLoader(name ? `Cargando ${name}…` : 'Cargando plano…');
-    try {
-      const { numPages } = await pdfRenderer.load(url, httpHeaders);
-      totalPages = numPages;
-      // id_en_repositorio es TEXTO (puede traer ceros al inicio): NO convertir a Number
-      session.docId       = (docId != null && String(docId).trim() !== '') ? String(docId).trim() : null;
-      session.docName     = name || url.split('/').pop() || 'documento.pdf';
-      session.pages       = {};
-      session.pageHeights = {};
-      rotation            = 0;             // cada documento arranca sin rotar
-      session.rotation    = 0;             // (se restaura desde el servidor si existe)
-      collabSync.reset();
-      hideViewerNotice();
-      ui.canvasWrapper.style.display = 'flex';
-      compare.close();
-      initMarkup();
-      enableDocs(true);
-      await goToPage(1);
-      // Colaboración: conectar PRIMERO a la sala (cursores y cambios en vivo),
-      // luego traer las capas ya guardadas sin bloquear la conexión.
-      collabSync.start();
-      collabSync.loadFromServer();
-      setStatus('');
-    } catch (e) {
-      console.error('Abrir plano:', e);   // el diagnóstico completo, para soporte
-      const [motivo, tecnico] = noticeFromError(e);
-      // `e.message` lleva el diagnóstico entero: en la barra de estado sólo cabe
-      // —y sólo sirve— la frase legible.
-      setStatus('Error: ' + motivo);
-      // Embebido en APEX un alert() es intrusivo y deja el lienzo en blanco:
-      // el motivo se explica en el propio lienzo.
-      showViewerNotice(motivo, tecnico);
-    } finally {
-      hidePlanoLoader();
-    }
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     NAVEGACIÓN
-     ════════════════════════════════════════════════════════════════════ */
-  async function goToPage(n) {
-    if (!pdfRenderer.isLoaded || n<1 || n>totalPages) return;
-    regionSnapshot.cancel();   // un recorte a medias no sobrevive al cambio de página
-    if (markup) session.pages[currentPage] = markup.getMarkupJSON();
-    currentPage = n;
-    setStatus('Renderizando…');
-    const r = await pdfRenderer.renderPage(n, PDF_RENDER_SUPERSAMPLE, rotation);
-    session.pageHeights[n] = r.logicalHeight;
-    await markup.setBackground(r.dataUrl, r.imageWidth, r.imageHeight, r.logicalWidth, r.logicalHeight);
-    propsPanel.closeIfOpen();
-    markup.setMarkupJSON(session.pages[n] || null);
-    markup.clearPeerCursors();                    // los cursores son por página
-    collabSync.applyRemoteLayersForPage(n);       // pintar capas remotas de esta página
-    buildUsersPanel();
-    compare.onPageChange(n);   // mantener overlay de Rev B si está activa
-    setStatus('');
-  }
-
-  /* Rota la vista 90° a derecha (horario) o izquierda (antihorario), temporal y
-     en memoria. Gira el fondo re-renderizándolo con PDF.js y las marcas con la
-     misma transformación, para que sigan alineadas sobre el plano. */
-  async function rotateDocument(clockwise = true) {
-    if (!pdfRenderer.isLoaded || !markup) return;
-    rotation = (rotation + (clockwise ? 90 : 270)) % 360;
-    session.rotation = rotation;        // se guardará al pulsar Guardar
-    markup.rotateContent(clockwise);   // gira las marcas usando las dimensiones lógicas ACTUALES (previas)
-    setStatus('Rotando…');
-    const r = await pdfRenderer.renderPage(currentPage, PDF_RENDER_SUPERSAMPLE, rotation);
-    session.pageHeights[currentPage] = r.logicalHeight;
-    await markup.setBackground(r.dataUrl, r.imageWidth, r.imageHeight, r.logicalWidth, r.logicalHeight);
-    collabSync.pushLocalLayer();        // sincroniza en vivo con los colaboradores (no persiste)
-    setStatus('');
-  }
-
-  /* Captura de pantalla por selección → feature ./features/region-snapshot.
-     La usan el botón de la barra superior y el menú de descarga de la comparación. */
-  const regionSnapshot = createRegionSnapshot({
-    getMarkup      : () => markup,
-    downloadImage  : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
-    defaultName    : () => `${(session.docName || 'plano').replace(/\.pdf$/i, '')}_captura_p${currentPage}`,
-    onActiveChange : (on) => {
-      const b = $('btn-snapshot');
-      if (b) b.classList.toggle('tb-btn-active', on);
-    },
-  });
-
-  /* Comparación de revisiones → feature ./features/compare-revisions */
-  const compare = createCompareRevisions({
-    getMarkup        : () => markup,
-    getSession       : () => session,
-    getCurrentPage   : () => currentPage,
-    getTotalPages    : () => totalPages,
-    pdfRenderer,
-    getRotation      : () => rotation,   // el overlay debe rasterizarse con el mismo giro
-    setStatus        : (m) => setStatus(m),
-    updateScaleBadge : () => updateScaleBadge(),
-    onPickRevision   : () => comparePicker.open({}),   // elegir la revisión desde la BD (target placeholder)
-    showHint         : (m, p) => showHint(m, p),
-    downloadImage    : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
-    startRegionSnapshot : (baseName) => regionSnapshot.start(baseName),
-    cancelRegionSnapshot: () => regionSnapshot.cancel(),
-  });
-
-  /* Selector de revisión a comparar — mismo listado/API que los hipervínculos (BD). */
-  const comparePicker = createListPicker({
-    ids: { modal: 'modal-compare', search: 'compare-search', list: 'compare-list', close: 'btn-compare-pick-close' },
-    loadingText: 'Cargando planos…',
-    fetchItems: async () => {
-      const headers: any = {};
-      const docId = session.docId;
-      if (docId != null && String(docId).trim() !== '') headers.id = String(docId).trim();
-      if (_codigoProyecto != null && String(_codigoProyecto).trim() !== '')
-        headers.codigo_proyecto = String(_codigoProyecto).trim();
-      const res = await fetch(API_PLANOS, { credentials: 'include', headers });
-      const items = res.ok ? ((await res.json()).items || []) : [];
-      return items.filter((p: any) => p.id_en_repositorio != null);
-    },
-    toRow: (p) => ({
-      value: String(p.id_en_repositorio),
-      label: String(p.display || p.nombre_archivo || `Plano ${p.id_en_repositorio}`),
-    }),
-    onPick: (_t, repo, _label, item) => {
-      const nombre = item?.nombre_archivo || `Plano ${repo}`;
-      const headers: Record<string, string> = { id: String(repo) };
-      if (nombre) headers.nombre = encodeURIComponent(String(nombre));
-      compare.loadRevisionUrl(API_PDF, headers, nombre);
-    },
-  });
-
-  /* ════════════════════════════════════════════════════════════════════
-     SESIÓN JSON
-     ════════════════════════════════════════════════════════════════════ */
-  function saveSession() {
-    if (!markup) return;
-    session.pages[currentPage] = markup.getMarkupJSON();
-    session.rotation = rotation;
-    if (scaleManager.isCalibrated()) session.scale = buildScaleObj();
-    const data = { version:3, docName:session.docName, pages:session.pages, pageHeights:session.pageHeights, scale:session.scale, rotation:session.rotation||0 };
-    storage.downloadJSON(data, `saf-markup-${session.docName.replace(/\.pdf$/i,'')}-${Date.now()}.json`);
-    storage.saveSession(data);
-    setStatus('Sesión JSON guardada ✓');
-  }
-
-  async function loadSessionFile(file) {
-    try {
-      const data = await storage.readJSONFile(file);
-      if (!data.pages) throw new Error('Formato inválido');
-      Object.assign(session, { docName:data.docName||session.docName, pages:data.pages||{}, pageHeights:data.pageHeights||{}, scale:data.scale||null, rotation:data.rotation||0 });
-      applyScaleFromSession(data.scale);
-      if (markup && pdfRenderer.isLoaded) {
-        rotation = ((session.rotation % 360) + 360) % 360;
-        markup.setMarkupJSON(session.pages[currentPage]||null);
-        if (rotation) goToPage(currentPage);   // re-renderiza el fondo con la orientación guardada
-        buildUsersPanel(); setStatus('Sesión JSON cargada ✓');
-      }
-      else setStatus('Sesión cargada. Abre el PDF correspondiente.');
-    } catch (e) { alert('Error al cargar sesión: '+e.message); }
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     XFDF
-     ════════════════════════════════════════════════════════════════════ */
-  function saveXFDF() {
-    if (!markup) return;
-    session.pages[currentPage] = markup.getMarkupJSON();
-    session.pageHeights[currentPage] = markup.getPageHeight();
-    const pagesWithMarkup = {};
-    for (const [p, json] of Object.entries(session.pages)) {
-      if (json && JSON.parse(json).length > 0) pagesWithMarkup[p] = json;
-    }
-    if (!Object.keys(pagesWithMarkup).length) { alert('No hay anotaciones que guardar.'); return; }
-    const scale = scaleManager.isCalibrated() ? { pxPerUnit:scaleManager.pxPerUnit, unit:scaleManager.unit } : null;
-    const xfdf  = XFDFConverter.toXFDF(pagesWithMarkup, session.docName||'documento.pdf', scale, session.pageHeights);
-    XFDFConverter.downloadXFDF(xfdf, session.docName.replace(/\.pdf$/i,'') + '.xfdf');
-    setStatus('XFDF guardado ✓');
-  }
-
-  async function loadXFDFFile(file) {
-    try {
-      const xfdfStr = await XFDFConverter.readFile(file);
-      const { pages:parsed, scale } = XFDFConverter.fromXFDF(xfdfStr, session.pageHeights);
-      if (scale?.pxPerUnit) { scaleManager.pxPerUnit=scale.pxPerUnit; scaleManager.unit=scale.unit; updateScaleBadge(); }
-      for (const [p, objs] of Object.entries(parsed)) session.pages[p] = JSON.stringify(objs);
-      if (markup && pdfRenderer.isLoaded) {
-        markup.setMarkupJSON(session.pages[currentPage]||null);
-        buildUsersPanel();
-        setStatus(`XFDF cargado: ${file.name}  —  ${Object.keys(parsed).length} pág.`);
-      } else setStatus(`XFDF cargado. Abre el PDF "${session.docName}" para verlo.`);
-    } catch (e) { alert('Error al cargar XFDF: '+e.message); console.error(e); }
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     CALIBRACIÓN DE ESCALA
-     ════════════════════════════════════════════════════════════════════ */
-  let calibrationMode     = 'points';
-  let calibrationState    = 0;
-  let calibrationPoint1      = null, calibrationPoint2 = null;
-  let calibrationListener = null;
-
-  /** Marca el chip de paso activo/completado (1..3) en el indicador visual. */
-  function setCalStep(step) {
-    if (!ui.calSteps) return;
-    ui.calSteps.querySelectorAll('.cal-step-chip').forEach(chip => {
-      const n = Number(chip.getAttribute('data-step'));
-      chip.classList.toggle('is-active', n === step);
-      chip.classList.toggle('is-done',   n <  step);
-    });
-  }
-
-  /** Reinicia el flujo de 2 puntos (sin cerrar la modal). */
-  function resetPointsFlow() {
-    calibrationState = 1; calibrationPoint1 = calibrationPoint2 = null;
-    ui.calStep1.style.display='block';
-    ui.calStep2.style.display='none';
-    ui.calStep3.style.display='none';
-    ui.calValue.value='';
-    ui.calResult.style.display='none';
-    ui.btnCalApply.disabled = true;
-    setCalStep(1);
-    if (window.calibrationLine && markup) {
-      markup.canvas.remove(window.calibrationLine);
-      window.calibrationLine = null;
-      markup.canvas.renderAll();
-    }
-    addCalibrationListener();
-  }
-
-  function switchCalTab(mode) {
-    calibrationMode = mode;
-    const isPoints = (mode === 'points');
-
-    ui.calModePoints.style.display = isPoints ? 'block' : 'none';
-    ui.calModeDirect.style.display = isPoints ? 'none'  : 'block';
-    ui.btnCalTabPoints.classList.toggle('cal-tab-active',  isPoints);
-    ui.btnCalTabDirect.classList.toggle('cal-tab-active', !isPoints);
-    ui.calResult.style.display = 'none';
-
-    // La modal siempre queda anclada (clase modal-pick fija en el HTML): no salta
-    // al cambiar de pestaña. En modo puntos el cursor es de mira sobre el canvas.
-    if (isPoints) {
-      resetPointsFlow();
-    } else {
-      removeCalibrationListener();
-      if (markup) markup.canvas.defaultCursor = 'default';
-      ui.btnCalApply.disabled = true;
-      updateDirectPreview();
-    }
-  }
-
-  function addCalibrationListener() {
-    if (calibrationListener || !markup) return;
-    markup.canvas.defaultCursor = 'crosshair';
-    calibrationListener = opt => {
-      if (!calibrationState) return;
-      const ptr = markup.canvas.getPointer(opt.e);
-      if (calibrationState === 1) {
-        calibrationPoint1=ptr; calibrationState=2;
-        ui.calStep1.style.display='none';
-        ui.calStep2.style.display='block';
-        setCalStep(2);
-      } else if (calibrationState === 2) {
-        calibrationPoint2=ptr; calibrationState=3;
-        const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
-        ui.calPxHint.innerHTML = `Distancia medida: <b>${px.toFixed(1)} px</b>`;
-        ui.calStep2.style.display='none';
-        ui.calStep3.style.display='block';
-        setCalStep(3);
-        ui.calValue.focus();
-        updatePointsPreview();       // aún sin distancia real → Aplicar deshabilitado
-        if (window.calibrationLine) markup.canvas.remove(window.calibrationLine);
-        window.calibrationLine = new fabric.Line(
-          [calibrationPoint1.x,calibrationPoint1.y,calibrationPoint2.x,calibrationPoint2.y],
-          {stroke:'#facc15',strokeWidth:2,strokeDashArray:[5,3],selectable:false,evented:false}
-        );
-        markup.canvas.add(window.calibrationLine);
-        markup.canvas.renderAll();
-      }
-    };
-    markup.canvas.on('mouse:up', calibrationListener);
-  }
-
-  function removeCalibrationListener() {
-    if (calibrationListener && markup) { markup.canvas.off('mouse:up',calibrationListener); calibrationListener=null; }
-  }
-
-  function openCalibrate() {
-    // Reset todo
-    calibrationPoint1=calibrationPoint2=null;
-    ui.calValue.value='';
-    ui.calPxDirect.value='';
-    ui.calValDirect.value='';
-    ui.calResult.style.display='none';
-    ui.btnCalApply.disabled=true;
-    // Neutralizar la herramienta para que clicar puntos no dibuje ni seleccione
-    if (markup) activateTool('select');
-    switchCalTab('points');          // siempre abre en modo 2-puntos
-    ui.modalCal.style.display='flex';
-  }
-
-  /** Muestra la escala resultante en la caja de resultado. */
-  function showCalResult(pxPerUnit, unit) {
-    ui.calResultValue.textContent = `1 ${unit} = ${pxPerUnit.toFixed(2)} px`;
-    ui.calResult.style.display = 'flex';
-  }
-
-  /** Modo 2 puntos: recalcula la vista previa cuando cambia la distancia real. */
-  function updatePointsPreview() {
-    const val = parseFloat(ui.calValue.value);
-    if (calibrationPoint2 && val > 0) {
-      const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
-      showCalResult(px / val, ui.calUnit.value);
-      ui.btnCalApply.disabled = false;
-    } else {
-      ui.calResult.style.display = 'none';
-      ui.btnCalApply.disabled = true;
-    }
-  }
-
-  function updateDirectPreview() {
-    const px  = parseFloat(ui.calPxDirect.value);
-    const val = parseFloat(ui.calValDirect.value);
-    if (px>0 && val>0) {
-      showCalResult(px / val, ui.calUnitDirect.value);
-      ui.btnCalApply.disabled = false;
-    } else {
-      ui.calResult.style.display = 'none';
-      ui.btnCalApply.disabled = true;
-    }
-  }
-
-  /** La escala es global: al calibrar se difunde y se AUTOGUARDA en el servidor
-      (sin arrastrar las figuras que aún no se han guardado con «Guardar»). */
-  function persistScaleAuto() {
-    collabSync.broadcastScale(session.scale);   // escala global → todos los colaboradores
-    if (session.docId == null) return;          // archivo local: sin servidor donde guardar
-    collabSync.saveScaleNow().then(ok => {
-      showSaveToast(ok ? 'success' : 'error',
-        ok ? 'Escala guardada' : 'No se pudo guardar la escala', 2500);
-    });
-  }
-
-  function applyCalibration() {
-    if (calibrationMode === 'direct') {
-      const px  = parseFloat(ui.calPxDirect.value);
-      const val = parseFloat(ui.calValDirect.value);
-      if (!px||px<=0||!val||val<=0) { alert('Ingresa valores mayores a 0'); return; }
-      scaleManager.calibrate(px, val, ui.calUnitDirect.value);
-      session.scale = buildScaleObj();
-      persistScaleAuto();                  // difunde + autoguarda la escala
-      closeCalibrate();
-      updateScaleBadge();
-      setStatus(`Escala: 1 ${ui.calUnitDirect.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
-    } else {
-      if (!calibrationPoint2) { alert('Haz clic en dos puntos del plano primero.'); return; }
-      const val = parseFloat(ui.calValue.value);
-      if (!val||val<=0) { alert('Ingresa un valor mayor a 0'); return; }
-      const px = Math.hypot(calibrationPoint2.x-calibrationPoint1.x, calibrationPoint2.y-calibrationPoint1.y);
-      scaleManager.calibrate(px, val, ui.calUnit.value);
-      session.scale = buildScaleObj();
-      persistScaleAuto();                  // difunde + autoguarda la escala
-      closeCalibrate();
-      updateScaleBadge();
-      setStatus(`Escala: 1 ${ui.calUnit.value} = ${scaleManager.pxPerUnit.toFixed(2)} px  ✓`);
-    }
-  }
-
-  function closeCalibrate() {
-    calibrationState=0;
-    ui.modalCal.style.display='none';
-    removeCalibrationListener();
-    if (markup) markup.canvas.defaultCursor='default';
-    if (window.calibrationLine) {
-      markup&&markup.canvas.remove(window.calibrationLine);
-      window.calibrationLine=null;
-      markup&&markup.canvas.renderAll();
-    }
-    markup&&markup.setTool(markup.currentTool);
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     PANEL DE PROPIEDADES DE ANOTACIÓN
-     ════════════════════════════════════════════════════════════════════ */
-
-  let activeAnnotationObject        = null;   // objeto Fabric.js activo en el panel
-  let linkPickTarget = null; // enlace al que se le asignará el plano destino (vía postMessage APEX)
-
-  /* Selector de plano destino (hipervínculo) — usa el picker genérico.
-     El id del plano actual va como header `id` para excluirlo del listado. */
-  const planoPicker = createListPicker({
-    ids: { modal: 'modal-plano', search: 'plano-search', list: 'plano-list', close: 'btn-plano-close' },
-    loadingText: 'Cargando planos…',
-    fetchItems: async () => {
-      const headers: any = {};
-      const docId = session.docId;
-      if (docId != null && String(docId).trim() !== '') headers.id = String(docId).trim();
-      if (_codigoProyecto != null && String(_codigoProyecto).trim() !== '')
-        headers.codigo_proyecto = String(_codigoProyecto).trim();
-      const res = await fetch(API_PLANOS, { credentials: 'include', headers });
-      const items = res.ok ? ((await res.json()).items || []) : [];
-      return items.filter(p => p.id_en_repositorio != null);
-    },
-    toRow: (p) => ({
-      value: String(p.id_en_repositorio),
-      label: String(p.display || p.nombre_archivo || `Plano ${p.id_en_repositorio}`),
-    }),
-    onPick: (link, repo, name, item) => {
-      if (!link || link.data?.type !== 'link') return;
-      link.data.targetRepoId = repo;
-      link.data.targetName   = name;
-      link.data.targetFile   = item?.nombre_archivo || null;
-      if (activeAnnotationObject === link) $('ap-link-target-name').textContent = name;
-      markup && markup._snapshot();
-      markup && markup._notifyLocalChange && markup._notifyLocalChange();
-      showHint(`Enlace → ${name}`);
-    },
-  });
-
-  /* Panel de propiedades → feature ./features/properties-panel.
-     El objeto activo (activeAnnotationObject) se queda aquí y se comparte por get/set. */
-  const propsPanel = createPropertiesPanel({
-    getMarkup     : () => markup,
-    getActiveObj  : () => activeAnnotationObject,
-    setActiveObj  : (o) => { activeAnnotationObject = o; },
-    btnToggle     : ui.btnTogglePanel,
-  });
-
-  /** Posiciona la mini-toolbar sobre la figura seleccionada (si tiene imagen adjunta) */
-  function updateFigToolbar() {
-    const tb = $('fig-toolbar');
-    if (!tb || !markup) return;
-    const obj = markup.canvas.getActiveObject();
-    if (!obj || !obj.data || !markup._firstImageAttachment(obj)) {
-      if (tb.style.display !== 'none') { tb.style.display = 'none'; tb.dataset.shown = ''; }
-      return;
-    }
-    obj.setCoords();
-    const tl = obj.aCoords.tl, tr = obj.aCoords.tr;
-    const sx = (tl.x + tr.x) / 2, sy = Math.min(tl.y, tr.y);
-    const v = markup.canvas.viewportTransform;                 // [zoom,0,0,zoom,tx,ty]
-    const px = v[0] * sx + v[2] * sy + v[4];
-    const py = v[1] * sx + v[3] * sy + v[5];
-    const r = markup.canvas.upperCanvasEl.getBoundingClientRect();
-    tb.style.left = (r.left + px) + 'px';
-    tb.style.top  = (r.top + py - 40) + 'px';
-    tb.style.display = 'flex';
-    const shown = obj.data.attShown !== false;
-    if (tb.dataset.shown !== String(shown)) {                  // solo redibuja el icono si cambió
-      tb.dataset.shown = String(shown);
-      const btn = $('fig-toggle-att');
-      btn.classList.toggle('on', shown);
-      btn.title = shown ? 'Ocultar adjunto en el plano' : 'Mostrar adjunto en el plano';
-      btn.innerHTML = `<i data-lucide="${shown ? 'eye-off' : 'eye'}"></i>`;
-      renderIcons();
-    }
-  }
-
-  /* downscaleImage → ./ui/image-utils
-     Panel de propiedades (open/close/toggle/refreshMeta/adjuntos) → propsPanel */
-
-  /* ════════════════════════════════════════════════════════════════════
-     USUARIOS — atribución de anotaciones
-     ════════════════════════════════════════════════════════════════════ */
-
-  // API_USUARIO y API_PDF se importan desde ./config (configurables por VITE_*)
-
-  /**
-   * Llama al API de APEX para descargar el PDF y lo abre en el visor.
-   * El id de repositorio y el nombre van como segmentos de ruta (valores puros):
-   *   GET {API_PDF}/123/plano-x.pdf
-   */
-  function openPDFFromRepo(repoId, name) {
-    if (repoId == null || repoId === '') return;
-    // El endpoint ORDS 'documento' espera id y nombre como HTTP HEADERS.
-    // El nombre se codifica (encodeURIComponent) porque los headers solo admiten
-    // ISO-8859-1: acentos/ñ/… reventarían con "non ISO-8859-1 code point".
-    const headers: Record<string, string> = { id: String(repoId) };
-    if (name) headers.nombre = encodeURIComponent(String(name));
-    openPDFFromUrl(API_PDF, repoId, name, headers);
-  }
-
-  // Identidad del usuario actual (getUserColor se importa de ./core/user-colors)
-  let _currentUserName = 'Anónimo';
-  let _currentUserId   = null;   // id numérico del usuario (USUARIO_GRABACION) si APEX lo envía
-  let _currentRevId    = null;   // id de la revisión del plano (ID_REVISIONES_PLANO) opcional
-  let _codigoProyecto  = null;   // P9130008_CODIGO_PROYECTO — filtra planos-listado y rfi-listado
-  let _canCollaborate  = false;  // P0_PERMISO_COLABORADOR === '1' → puede guardar marcas y descargar
-
-  /** Normaliza el valor del permiso de colaborador (APEX) a booleano. */
-  function setCollabPermission(value) {
-    _canCollaborate = String(value ?? '').trim() === '1';
-    applyCollabPermission();
-  }
-
-  /** Muestra/oculta los botones Guardar y Descargar según el permiso. */
-  function applyCollabPermission() {
-    ['btn-save-marks', 'btn-download-doc'].forEach(id => {
-      const b = $(id);
-      // El de Descargar vive dentro de un submenú: se oculta el envoltorio entero
-      const box = b && (b.closest('.tb-dropdown-wrap') || b);
-      if (box) box.style.display = _canCollaborate ? '' : 'none';
-    });
-  }
-
-  /** Cambia el usuario activo: actualiza markup layer + UI */
-  function setCurrentUser(name) {
-    _currentUserName = (name || 'Anónimo').trim() || 'Anónimo';
-    if (markup) markup.currentUser = _currentUserName;
-
-    const color = getUserColor(_currentUserName);
-    if (ui.userDot) {
-      ui.userDot.style.background = color;
-      ui.userDot.style.display    = 'inline-block';
-    }
-    if (ui.userNameLabel) ui.userNameLabel.textContent = _currentUserName;
-
-    // Si ya estamos en una sala, re-anunciarse con la identidad correcta
-    if (collab.connected && session.docId != null)
-      collab.connect(session.docId, _currentUserName, color);
-
-    // No se persiste el nombre: la identidad siempre viene de la URL (APEX),
-    // así no queda ningún nombre "fantasma" de sesiones anteriores.
-    try { localStorage.removeItem('saf_user'); } catch (e) {}
-  }
-
-  /**
-   * Reconstruye la lista de COLABORADORES del plano: usuarios conectados en vivo
-   * (presencia por WebSocket) unidos con los autores que tienen marcas en la página.
-   * Marca quién está "en línea" y permite ocultar/mostrar por autor.
-   */
-  function buildUsersPanel() {
-    if (!ui.authorsList) return;
-    const authors = markup ? markup.getAuthors() : []; // [{ name, count }]
-    const countByName = {};
-    authors.forEach(a => { countByName[a.name] = a.count; });
-
-    // Conjunto de conectados: yo siempre + los peers presentes en la sala
-    const online = new Set();
-    online.add(_currentUserName);
-    presenceByUser.forEach(p => p && p.user && online.add(p.user));
-
-    // Lista final: conectados + autores con marcas (sin duplicados)
-    const names = [...new Set([...online, ...authors.map(a => a.name)])];
-
-    if (!names.length) {
-      ui.authorsList.innerHTML = '<div class="author-empty">Sin colaboradores aún</div>';
-      return;
-    }
-
-    ui.authorsList.innerHTML = names.map(name => {
-      const color     = getUserColor(name);
-      const isCurrent = (name === _currentUserName);
-      const isOnline  = online.has(name);
-      const count     = countByName[name] || 0;
-      const hidden    = markup ? markup.isAuthorHidden(name) : false;
-      return `<div class="author-row${isCurrent ? ' author-current' : ''}${isOnline ? ' author-online' : ''}${hidden ? ' author-hidden' : ''}" data-author="${name}">
-        <span class="author-dot" style="background:${color}"></span>
-        <span class="author-name">${name}${isCurrent ? ' (tú)' : ''}</span>
-        ${isOnline ? '<span class="author-presence-badge"><span class="live-dot"></span> en línea</span>' : ''}
-        ${count ? `<span class="author-count">${count}</span>` : ''}
-        <button class="author-toggle" data-author="${name}" title="${hidden ? 'Mostrar anotaciones' : 'Ocultar anotaciones'}"><i data-lucide="${hidden ? 'eye-off' : 'eye'}"></i></button>
-      </div>`;
-    }).join('');
-    renderIcons(ui.authorsList);
-
-    // Botón ojo: toggle visibilidad de anotaciones del autor (estado persistente
-    // en el markup, así sobrevive a reconstrucciones de la lista).
-    ui.authorsList.querySelectorAll('.author-toggle').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        if (!markup) return;
-        const name      = btn.dataset.author;
-        const nowHidden = !markup.isAuthorHidden(name);   // alterna sobre el estado real
-        markup.filterByAutor(name, !nowHidden);
-        btn.closest('.author-row').classList.toggle('author-hidden', nowHidden);
-        btn.title = nowHidden ? 'Mostrar anotaciones' : 'Ocultar anotaciones';
-        btn.innerHTML = `<i data-lucide="${nowHidden ? 'eye-off' : 'eye'}"></i>`;
-        renderIcons(btn as HTMLElement);
-      });
-    });
-  }
-
-  /** Conecta el tooltip flotante de autor con el evento onAnnotHover */
-  function initAnnotTooltip() {
-    const tip = ui.annotTooltip;
-    if (!tip || !markup) return;
-
-    markup.onAnnotHover = (data, evt) => {
-      if (!data) { tip.style.display = 'none'; return; }
-
-      const autor = data.autor || 'Anónimo';
-      const color = getUserColor(autor);
-      const fecha = data.fecha
-        ? new Date(data.fecha).toLocaleString('es', {
-            day:'2-digit', month:'short', year:'numeric',
-            hour:'2-digit', minute:'2-digit'
-          })
-        : '';
-
-      const tipoInfo  = ANNOT_TYPES.find(t => t.id === (data.tipoAnnot || ''));
-      const prioClass = data.prioridad ? `tip-prio-${data.prioridad}` : '';
-
-      tip.innerHTML =
-        `<span class="tip-dot" style="background:${color}"></span>` +
-        `<span class="tip-autor">${autor}</span>` +
-        (fecha       ? `<span class="tip-fecha">${fecha}</span>` : '') +
-        (tipoInfo    ? `<span class="tip-type"><i data-lucide="${tipoInfo.icon}"></i> ${tipoInfo.label}</span>` : '') +
-        (data.prioridad ? `<span class="tip-fecha ${prioClass}"><i data-lucide="flag"></i> ${data.prioridad}</span>` : '');
-      renderIcons(tip);
-
-      // Posicionar al lado del cursor
-      tip.style.left    = ((evt?.clientX || 0) + 16) + 'px';
-      tip.style.top     = ((evt?.clientY || 0) - 12) + 'px';
-      tip.style.display = 'flex';
-
-      // Ajustar si se sale del viewport
-      requestAnimationFrame(() => {
-        const r = tip.getBoundingClientRect();
-        if (r.right  > window.innerWidth  - 8) tip.style.left = (window.innerWidth  - r.width  - 8) + 'px';
-        if (r.bottom > window.innerHeight - 8) tip.style.top  = (window.innerHeight - r.height - 8) + 'px';
-      });
-    };
-  }
-
-  /* ════════════════════════════════════════════════════════════════════
-     ARRANQUE — wiring de eventos
-     ════════════════════════════════════════════════════════════════════ */
-
-  // 0. Iconos Lucide (reemplaza los <i data-lucide> por SVG)
-  renderIcons();
-
-  // 1. Dropdowns
-  initDropdowns();
-
-  // 1b. Riel de herramientas arrastrable (recuerda su posición)
-  initRailDrag();
-
-  // 2. PDF (abrir local solo desde la pantalla vacía; en modo embebido se oculta)
-
-  // 3. Descargar documento (PDF + marcas si están visibles)
-  // El botón abre el submenú (lo gestiona dropdowns.ts); descargan sus dos ítems
-  $('btn-dl-pdf-marks')?.addEventListener('click', () => downloadDocument(true));
-  $('btn-dl-pdf-clean')?.addEventListener('click', () => downloadDocument(false));
-
-  // 3a. Cerrar visor → avisa al padre (APEX) para que cierre el iframe/diálogo
-  $('btn-close-viewer') && $('btn-close-viewer').addEventListener('click', closeViewer);
-
-  // 3b. Guardar marcas (persiste la capa propia en el servidor)
-  $('btn-save-marks') && $('btn-save-marks').addEventListener('click', saveMarks);
-
-  // 5. Zoom / rotación
-  ui.btnZoomIn .addEventListener('click', () => markup&&markup.zoomStep(1));
-  ui.btnZoomOut.addEventListener('click', () => markup&&markup.zoomStep(-1));
-  ui.btnFit    .addEventListener('click', () => markup&&markup.fitToCanvas());
-  ui.btnRotateLeft .addEventListener('click', () => rotateDocument(false));
-  ui.btnRotateRight.addEventListener('click', () => rotateDocument(true));
-
-  // 6. Herramientas (toolbar principal + items de dropdown)
-  document.querySelectorAll('.tb-tool').forEach(btn => {
-    btn.addEventListener('click', () => activateTool(btn.dataset.tool));
-  });
-
-  // 6a. Botón de grupo del riel: clic en el cuerpo → activa la herramienta actual
-  // del grupo; el caret (>) despliega el resto de opciones (lo abre dropdowns.ts).
-  document.querySelectorAll('.rail-group').forEach(btn => {
-    btn.addEventListener('click', e => {
-      if (e.target.closest('.tb-caret')) return;   // el caret abre el submenú
-      const tool = btn.dataset.tool;
-      if (tool) activateTool(tool);
-    });
-  });
-
-  // 6b. Nube RFI: activa la herramienta de nube y marca que, al colocarla, se abra
-  // la modal de RFI. Dos modos, igual que la nube normal:
-  //   'cloud'      → dos puntos (arrastrar de esquina a esquina)
-  //   'cloud-poly' → múltiples puntos (clic en cada vértice, doble clic cierra)
-  // Ambos caminos llaman a markup.onCloudCreated, que es donde se vincula el RFI.
-  // OJO: activateTool() resetea el flag, por eso se activa DESPUÉS de llamarla.
-  const RFI_CLOUD_HINTS = {
-    'cloud'     : 'Arrastra para dibujar la nube RFI · luego elige el RFI a vincular',
-    'cloud-poly': 'Clic en cada punto de la nube RFI · doble clic para cerrar · luego elige el RFI',
-  };
-  function activateRfiCloud(tool) {
-    activateTool(tool);
-    pendingRfiCloud = true;
-    // El resaltado va en el botón Nube RFI, no en la herramienta de nube normal
-    document.querySelectorAll(`.tb-tool[data-tool="${tool}"]`).forEach(b => b.classList.remove('tb-btn-active'));
-    $('btn-cloud-group')?.classList.remove('tb-btn-active');   // grupo Nube: no debe quedar activo
-    const rfiBtn = $('btn-tool-cloud-rfi');
-    if (rfiBtn) {
-      rfiBtn.classList.add('tb-btn-active');
-      rfiBtn.dataset.rfiTool = tool;   // el cuerpo del botón repite el último modo elegido
-    }
-    document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item')
-      .forEach(it => it.classList.toggle('tb-btn-active', it.dataset.rfiTool === tool));
-    showHint(RFI_CLOUD_HINTS[tool] || '', true);
-  }
-  $('btn-tool-cloud-rfi')?.addEventListener('click', (e) => {
-    if (e.target.closest('.tb-caret')) return;   // el caret abre el submenú
-    activateRfiCloud($('btn-tool-cloud-rfi').dataset.rfiTool || 'cloud');
-  });
-  document.querySelectorAll('#dropdown-cloud-rfi .tb-drop-item').forEach(item => {
-    item.addEventListener('click', () => activateRfiCloud(item.dataset.rfiTool));
-  });
-
-  // 7. Estilos
-  ui.strokeColor.addEventListener('input', e => { markup&&markup.setStrokeColor(e.target.value); syncFill(); });
-  ui.fillColor  .addEventListener('input', ()  => syncFill());
-  ui.fillAlpha  .addEventListener('input', ()  => syncFill());
-  ui.strokeWidth.addEventListener('change', e  => markup&&markup.setStrokeWidth(e.target.value));
-  ui.fontSize && ui.fontSize.addEventListener('change', e => markup&&markup.setFontSize(e.target.value));
-
-  function syncFill() {
-    const hex=ui.fillColor.value, a=parseInt(ui.fillAlpha.value,10)/100;
-    const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
-    markup&&markup.setFillColor(`rgba(${r},${g},${b},${a.toFixed(2)})`);
-    if (ui.fillAlphaVal) ui.fillAlphaVal.textContent = ui.fillAlpha.value + '%';   // eco del valor
-  }
-
-  // 8. Toggle markup (ítem "Mostrar / ocultar todas" dentro del menú de Marcas)
-  ui.btnToggle && ui.btnToggle.addEventListener('click', () => {
-    if (!markup) return;
-    markupVisible=!markupVisible;
-    markup.setMarkupVisible(markupVisible);
-    ui.btnToggle.classList.toggle('tb-btn-active', !markupVisible);
-    // Refleja el estado en el ícono del ítem (ojo / ojo tachado)
-    ui.btnToggle.innerHTML = markupVisible
-      ? '<i data-lucide="eye"></i> Mostrar / ocultar todas las marcas'
-      : '<i data-lucide="eye-off"></i> Marcas ocultas — mostrar';
-    renderIcons(ui.btnToggle);
-    // El botón del menú (layers) indica si hay algo oculto
-    $('btn-markup-menu')?.classList.toggle('tb-btn-active', markupVisible);
-  });
-
-  // Al abrir el menú de Marcas, refrescar la lista de colaboradores
-  $('btn-markup-menu') && $('btn-markup-menu').addEventListener('click', () => buildUsersPanel());
-
-  // 9. Undo / Redo
-  ui.btnUndo.addEventListener('click', () => markup&&markup.undo());
-  ui.btnRedo.addEventListener('click', () => markup&&markup.redo());
-
-  // 10. Calibrar
-  ui.btnCalibrate   .addEventListener('click', openCalibrate);
-  ui.btnCalApply    .addEventListener('click', applyCalibration);
-  ui.btnCalCancel   .addEventListener('click', closeCalibrate);
-  ui.btnCalTabPoints.addEventListener('click', () => switchCalTab('points'));
-  ui.btnCalTabDirect.addEventListener('click', () => switchCalTab('direct'));
-  ui.btnCalReset && ui.btnCalReset.addEventListener('click', resetPointsFlow);
-  [ui.calPxDirect, ui.calValDirect, ui.calUnitDirect].forEach(el =>
-    el.addEventListener('input', updateDirectPreview)
-  );
-  [ui.calValue, ui.calUnit].forEach(el =>
-    el.addEventListener('input', updatePointsPreview)
-  );
-  // Enter aplica (si es válido), Escape cierra la calibración.
-  document.addEventListener('keydown', e => {
-    if (ui.modalCal.style.display !== 'flex') return;
-    if (e.key === 'Escape') { closeCalibrate(); }
-    else if (e.key === 'Enter' && !ui.btnCalApply.disabled) { applyCalibration(); }
-  });
-
-  // 11. Eliminar MIS marcas de esta página (con modal de confirmación propia)
-  ui.btnClear && ui.btnClear.addEventListener('click', () => {
-    if (!markup) return;
-    confirmDialog.open({
-      title  : 'Eliminar mis marcas',
-      message: '¿Seguro que quieres eliminar todas tus marcas de esta página? Esta acción no se puede deshacer.',
-      okText : 'Eliminar',
-      danger : true,
-      onConfirm: () => {
-        markup.clearMyMarkup();                 // borra solo lo del usuario actual
-        session.pages[currentPage] = markup.getMarkupJSON();
-        collabSync.pushLocalLayer();            // sincroniza en vivo; NO persiste:
-                                                // el borrado se guarda al pulsar «Guardar»
-        ui.areaPanel.style.display = 'none';
-        showHint('Tus marcas de esta página fueron eliminadas');
-      },
-    });
-  });
-
-  // 12. Descargar documento — PNG de la página (con marcas si están visibles)
-  /** Escala parametrizada para persistir: píxeles medidos, distancia real y unidad. */
-  function buildScaleObj() {
-    if (!scaleManager.isCalibrated()) return null;
-    return {
-      pxPerUnit      : scaleManager.pxPerUnit,   // derivado (para los cálculos)
-      pixeles        : scaleManager.pxDistance,  // píxeles medidos en el plano
-      distancia_real : scaleManager.realValue,   // distancia real ingresada
-      unidad         : scaleManager.unit,        // unidad de medida (m, cm, …)
-      unit           : scaleManager.unit,        // alias inglés → lo lee el handler ORDS ($.scale.unit)
-      ts             : Date.now(),               // hora de calibración → gana la más reciente
-    };
-  }
-
-  /** Restaura la escala desde la sesión guardada (server o archivo). */
-  function applyScaleFromSession(scale) {
-    if (!scale) return;
-    const px   = scale.pixeles ?? null;
-    const real = scale.distancia_real ?? null;
-    const unit = scale.unidad || scale.unit || 'm';
-    if (px > 0 && real > 0) {
-      scaleManager.calibrate(px, real, unit);   // reconstruye desde los parámetros crudos
-    } else if (scale.pxPerUnit) {
-      scaleManager.pxPerUnit = scale.pxPerUnit; // compatibilidad con guardados antiguos
-      scaleManager.unit      = unit;
-    }
-    updateScaleBadge();
-  }
-
-  /* ── Toast de guardado ─────────────────────────────────────────────── */
-  let saveToastTimer = null;
-  /**
-   * Muestra el toast de guardado.
-   * @param {'loading'|'success'|'error'} state
-   * @param {string} msg   texto a mostrar
-   * @param {number} hideAfter  ms hasta ocultar (0 = no auto-ocultar; para 'loading')
-   */
-  function showSaveToast(state, msg, hideAfter = 0) {
-    if (!ui.saveToast) return;
-    if (saveToastTimer) { clearTimeout(saveToastTimer); saveToastTimer = null; }
-    ui.saveToast.classList.remove('is-loading', 'is-success', 'is-error');
-    ui.saveToast.classList.add('is-' + state, 'is-visible');
-    ui.saveToastMsg.textContent = msg;
-    // Ícono: el spinner de 'loading' es puramente CSS (sin SVG)
-    if (state === 'loading') {
-      ui.saveToastIc.innerHTML = '';
-    } else {
-      ui.saveToastIc.innerHTML = `<i data-lucide="${state === 'success' ? 'check' : 'alert-triangle'}"></i>`;
-      renderIcons(ui.saveToastIc);
-    }
-    if (hideAfter > 0) saveToastTimer = setTimeout(hideSaveToast, hideAfter);
-  }
-  function hideSaveToast() {
-    if (!ui.saveToast) return;
-    ui.saveToast.classList.remove('is-visible');
-    if (saveToastTimer) { clearTimeout(saveToastTimer); saveToastTimer = null; }
-  }
-
-  /** Guarda TODO explícitamente (solo al pulsar Guardar): marcas, rotación y escala. */
-  async function saveMarks() {
-    if (!markup) return;
-    if (!_canCollaborate) { showSaveToast('error', 'No tienes permiso para guardar', 3000); return; }
-    session.pages[currentPage]       = markup.getMarkupJSON();
-    session.pageHeights[currentPage] = markup.getPageHeight();
-    session.rotation                 = rotation;
-    session.scale                    = buildScaleObj();
-    if (session.docId == null) {     // archivo local (sin sala): no hay servidor donde guardar
-      showSaveToast('error', 'Sin servidor: usa Descargar para exportar', 3000);
-      return;
-    }
-    const btn = $('btn-save-marks');
-    if (btn) btn.disabled = true;    // evita doble clic durante el guardado
-    showSaveToast('loading', 'Guardando…');
-    const ok = await collabSync.saveNow();
-    if (btn) btn.disabled = false;
-    if (ok) showSaveToast('success', 'Cambios guardados', 3000);
-    else    showSaveToast('error',   'No se pudo guardar. Reintenta.', 3000);
-  }
-
-  /** Dispara la descarga de un PNG: vía APEX (postMessage) si está embebido, o directa. */
-  function triggerFileDownload(dataUrl, filename) {
-    if (!dataUrl) return;
-    if (window.parent !== window) {
-      // Embebido en APEX (iframe sandbox): el padre dispara la descarga
-      try { window.parent.postMessage({ action: 'downloadDoc', filename, dataUrl }, APEX_ORIGIN); } catch (e) {}
-      showHint('Descargando…');
-    } else {
-      // Standalone: descarga directa
-      const a = document.createElement('a');
-      a.href = dataUrl; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-    }
-  }
-
-  /* Descarga del documento en PDF → feature ./features/export-pdf */
-  const exportPdf = createExportPdf({
-    pdfRenderer,
-    getMarkup     : () => markup,
-    getSession    : () => session,
-    getCurrentPage: () => currentPage,
-    getTotalPages : () => totalPages,
-    goToPage      : (n) => goToPage(n),
-    downloadFile  : (dataUrl, filename) => triggerFileDownload(dataUrl, filename),
-    setStatus     : (m) => setStatus(m),
-  });
-
-  /** Descarga el documento en PDF, con las marcas incrustadas o el original limpio. */
-  async function downloadDocument(withMarkup) {
-    if (!markup || !pdfRenderer.isLoaded) return;
-    if (!_canCollaborate) { showHint('No tienes permiso para descargar'); return; }
-    closeAllDropdowns();
-    try {
-      setStatus('Generando PDF…');
-      if (withMarkup) await exportPdf.downloadWithMarkup();
-      else            await exportPdf.downloadOriginal();
-      setStatus('');
-    } catch (err) {
-      console.error('[SAF] descarga PDF:', err);
-      setStatus('');
-      showHint('No se pudo generar el PDF');
-    }
-  }
-
-  /** Cierra el visor: avisa al padre (APEX) para que cierre el iframe/diálogo. */
-  function closeViewer() {
-    closeAllDropdowns();
-    // Siempre pedir confirmación antes de cerrar (evita cierres accidentales).
-    confirmDialog.open({
-      title: '¿Cerrar el visor?',
-      message: 'Se cerrará el visor de planos. Asegúrate de haber guardado tus cambios.',
-      okText: 'Cerrar',
-      cancelText: 'Cancelar',
-      danger: true,
-      onConfirm: () => {
-        // Avisar al contenedor (APEX u otro padre) para que cierre el iframe/diálogo.
-        // OJO: se envía con targetOrigin '*' — dentro del iframe NO conocemos el origen
-        // real del padre, y APEX_ORIGIN (que por defecto es el propio origen del visor)
-        // haría que el navegador descartara el mensaje. Sin datos sensibles → '*' es seguro.
-        const msg = { source: 'visor-planos', action: 'close' };
-        try { if (window.parent && window.parent !== window) window.parent.postMessage(msg, '*'); } catch (e) {}
-        try { if (window.top && window.top !== window) window.top.postMessage(msg, '*'); } catch (e) {}
-        // Además intentar cerrar la ventana directamente (si la abrió window.open).
-        try { window.close(); } catch (e) {}
-        try { window.open('', '_self'); window.close(); } catch (e) {}
-      },
-    });
-  }
-
-  // 13. Panel área
-  $('btn-area-close').addEventListener('click', () => { ui.areaPanel.style.display='none'; });
-
-  // 13b. Comparación de revisiones (feature ./features/compare-revisions)
-  compare.init();
-  comparePicker.init();
-
-  // 13c. Captura de pantalla por selección (feature ./features/region-snapshot)
-  regionSnapshot.init();
-  $('btn-snapshot')?.addEventListener('click', () => {
-    if (!markup || !pdfRenderer.isLoaded) return;
-    closeAllDropdowns();
-    // Segundo clic mientras se está recortando → cancelar
-    if (regionSnapshot.isActive()) { regionSnapshot.cancel(); return; }
-    regionSnapshot.start();
-  });
-
-  // 14. Sellos y Etiquetas
-  // .stamp-opt  → rubber stamp clásico (inclinado)
-  // .stamp-label → etiqueta profesional (borde doble, recto)
-  document.querySelectorAll('.stamp-opt, .stamp-label').forEach(btn => {
-    btn.addEventListener('click', () => {
-      ui.modalStamp.style.display = 'none';
-      if (!markup || !markup._pendingStampPos) return;
-      const { x, y } = markup._pendingStampPos;
-      const style     = btn.dataset.style || 'stamp';
-      if (style === 'label' || style === 'hatch') {
-        markup.addLabel(x, y, btn.dataset.stamp, btn.dataset.color, style);
-      } else {
-        markup.addStamp(x, y, btn.dataset.stamp, btn.dataset.color);
-      }
-      markup._pendingStampPos = null;
-      // Volver a select para poder mover/redimensionar el sello recién colocado
-      activateTool('select');
-    });
-  });
-  ui.btnStampCancel.addEventListener('click', () => {
-    ui.modalStamp.style.display = 'none';
-    if (markup) markup._pendingStampPos = null;
-    activateTool('select');   // cancelar también vuelve a select
-  });
-
-  // 15. Toggle del panel de propiedades (toolbar + tecla P)
-  if (ui.btnTogglePanel) {
-    ui.btnTogglePanel.addEventListener('click', () => propsPanel.toggle());
-    ui.btnTogglePanel.classList.toggle('tb-btn-active', true);
-  }
-
-  // 16. Panel de propiedades de anotación ──────────────────────────────
-  // Las propiedades se aplican en vivo: ya no hay botones Guardar / Cancelar.
-  $('btn-ap-close') && $('btn-ap-close').addEventListener('click', () => propsPanel.close());
-
-  // Botones de prioridad (mutual exclusivo)
-  document.querySelectorAll('.ap-prio').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const wasActive = btn.classList.contains('active');
-      document.querySelectorAll('.ap-prio').forEach(b => b.classList.remove('active'));
-      if (!wasActive) btn.classList.add('active');   // segundo clic → deselecciona
-    });
-  });
-
-  // Descripción: contador + guardado en vivo en la figura (sin botón Guardar)
-  $('ap-desc') && $('ap-desc').addEventListener('input', () => {
-    $('ap-desc-count').textContent = $('ap-desc').value.length;
-    if (activeAnnotationObject) {
-      activeAnnotationObject.data = Object.assign(activeAnnotationObject.data || {}, { descripcion: $('ap-desc').value.trim() });
-      propsPanel.refreshMeta(activeAnnotationObject.data);
-    }
-  });
-  // Al perder el foco: registrar en el historial y propagar a la sala
-  $('ap-desc') && $('ap-desc').addEventListener('change', () => {
-    if (markup && activeAnnotationObject) { markup._snapshot(); markup._notifyLocalChange && markup._notifyLocalChange(); }
-  });
-
-  // ── Apariencia + etiqueta de la figura (edición en vivo) ──────────────
-  $('ap-label') && $('ap-label').addEventListener('input', () => {
-    if (markup && activeAnnotationObject) markup.setAnnotText(activeAnnotationObject, $('ap-label').value);
-  });
-  $('ap-stroke') && $('ap-stroke').addEventListener('input', () => {
-    if (markup && activeAnnotationObject) markup.setObjProp(activeAnnotationObject, 'stroke', $('ap-stroke').value);
-  });
-  $('ap-fill') && $('ap-fill').addEventListener('input', () => {
-    if (!markup || !activeAnnotationObject) return;
-    const a = extractFillAlpha(activeAnnotationObject.fill);                 // conservar la opacidad del relleno
-    markup.setObjProp(activeAnnotationObject, 'fill', hexToRgba($('ap-fill').value, a));
-  });
-  $('ap-stroke-w') && $('ap-stroke-w').addEventListener('input', () => {
-    if (!markup || !activeAnnotationObject) return;
-    const w = parseInt($('ap-stroke-w').value, 10);
-    $('ap-stroke-w-val').textContent = w;
-    markup.setObjProp(activeAnnotationObject, 'strokeWidth', w);
-  });
-  $('ap-font-size') && $('ap-font-size').addEventListener('input', () => {
-    if (!markup || !activeAnnotationObject) return;
-    const px = parseInt($('ap-font-size').value, 10);
-    $('ap-font-size-val').textContent = px;
-    markup.setObjFontSize(activeAnnotationObject, px);
-  });
-  $('ap-opacity') && $('ap-opacity').addEventListener('input', () => {
-    if (!markup || !activeAnnotationObject) return;
-    const o = parseInt($('ap-opacity').value, 10);
-    $('ap-opacity-val').textContent = o;
-    markup.setObjProp(activeAnnotationObject, 'opacity', o / 100);
-  });
-  $('ap-link-page') && $('ap-link-page').addEventListener('input', () => {
-    if (!activeAnnotationObject || activeAnnotationObject.data?.type !== 'link') return;
-    const n = parseInt($('ap-link-page').value, 10);
-    activeAnnotationObject.data.targetPage = (n > 0) ? n : null;
-    markup && markup._snapshot();
-  });
-
-  // Elegir plano destino → abrir el selector DENTRO del visor (list-picker)
-  $('btn-ap-pick-plano') && $('btn-ap-pick-plano').addEventListener('click', () => {
-    if (!activeAnnotationObject || activeAnnotationObject.data?.type !== 'link') return;
-    linkPickTarget = activeAnnotationObject;     // también para el flujo por postMessage (APEX)
-    planoPicker.open(activeAnnotationObject);
-  });
-  // Quitar el destino
-  $('btn-ap-clear-plano') && $('btn-ap-clear-plano').addEventListener('click', () => {
-    if (!activeAnnotationObject || activeAnnotationObject.data?.type !== 'link') return;
-    confirmDialog.open({
-      title: 'Quitar destino', message: '¿Quitar el plano destino de este enlace?',
-      okText: 'Quitar', danger: true,
-      onConfirm: () => {
-        activeAnnotationObject.data.targetRepoId = null;
-        activeAnnotationObject.data.targetName   = null;
-        $('ap-link-target-name').textContent = '— sin destino —';
-        markup && markup._snapshot();
-        markup && markup._notifyLocalChange && markup._notifyLocalChange();
-      },
-    });
-  });
-
-  // RFI: abrir el selector (modal) / quitar el RFI vinculado del sello
-  $('btn-ap-pick-rfi') && $('btn-ap-pick-rfi').addEventListener('click', () => {
-    if (activeAnnotationObject) rfiPicker.open(activeAnnotationObject);
-  });
-  $('btn-ap-clear-rfi') && $('btn-ap-clear-rfi').addEventListener('click', () => {
-    if (!activeAnnotationObject) return;
-    confirmDialog.open({
-      title: 'Quitar RFI', message: '¿Desvincular el RFI de este sello?',
-      okText: 'Quitar', danger: true,
-      onConfirm: () => {
-        activeAnnotationObject.data = Object.assign(activeAnnotationObject.data || {}, { rfiId: null, rfiLabel: null });
-        $('ap-rfi-name').textContent = '— sin RFI —';
-        markup && markup._snapshot();
-        markup && markup._notifyLocalChange && markup._notifyLocalChange();
-      },
-    });
-  });
-
-  // "Crear" (primera línea del selector de RFI): abre la página de APEX sin id.
-  // Se cierra con dismiss() para NO disparar onCancel: la nube RFI en curso se
-  // conserva y se puede vincular después con "Elegir RFI…" en el panel.
-  $('btn-rfi-create')?.addEventListener('click', () => {
-    rfiPicker.dismiss();
-    rfiPicker.refresh();   // el RFI nuevo debe aparecer la próxima vez que se abra
-    openRfiCreate();
-  });
-
-  // Eventos de los modales selector (planos + RFIs) y de confirmación
-  planoPicker.init();
-  rfiPicker.init();
-  confirmDialog.init();
-
-  // ── Adjuntos: agregar / abrir / quitar ──────────────────────────────
-  $('btn-ap-attach') && $('btn-ap-attach').addEventListener('click', () => $('ap-att-input').click());
-  $('ap-att-input') && $('ap-att-input').addEventListener('change', e => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (!activeAnnotationObject || !files.length) return;
-    if (!activeAnnotationObject.data) activeAnnotationObject.data = {};
-    if (!activeAnnotationObject.data.adjuntos) activeAnnotationObject.data.adjuntos = [];
-    const target = activeAnnotationObject;   // figura fija aunque cambie la selección durante la lectura
-    let pending = files.length;
-    const done = () => { if (--pending === 0) { propsPanel.refreshAttachments(); markup && markup.refreshThumb(target); markup && markup._snapshot(); } };
-    files.forEach(f => {
-      if (f.size > MAX_ATTACHMENT_BYTES) {
-        alert(`"${f.name}" supera 25 MB. Adjunta un archivo más liviano.`);
-        done(); return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const raw = reader.result;
-        if ((f.type || '').startsWith('image/')) {
-          // Optimizar: redimensionar a máx 1920px y recomprimir (foto de varios MB → ~200 KB)
-          downscaleImage(raw, f.type, ATTACHMENT_MAX_DIM, ATTACHMENT_JPEG_QUALITY, (outUrl, outType) => {
-            target.data.adjuntos.push({ name: f.name, type: outType, size: outUrl.length, dataUrl: outUrl, optimizada: true });
-            done();
-          });
-        } else {
-          target.data.adjuntos.push({ name: f.name, type: f.type, size: f.size, dataUrl: raw });
-          done();
-        }
-      };
-      reader.onerror = done;
-      reader.readAsDataURL(f);
-    });
-  });
-  // ── Imagen como anotación: colocar foto/figura sobre el plano ────────
-  $('img-place-input') && $('img-place-input').addEventListener('change', e => {
-    const f = (e.target.files || [])[0];
-    e.target.value = '';
-    if (!f || !markup) { activateTool('select'); return; }
-    if (!f.type.startsWith('image/')) { alert('Selecciona un archivo de imagen.'); activateTool('select'); return; }
-    if (f.size > MAX_ATTACHMENT_BYTES) { alert(`"${f.name}" supera 25 MB. Elige una imagen más liviana.`); activateTool('select'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      downscaleImage(reader.result, f.type, ATTACHMENT_MAX_DIM, ATTACHMENT_JPEG_QUALITY_FILE, (outUrl, outType) => {
-        markup.placePendingImage(outUrl, f.name, outType);
-        activateTool('select');
-      });
-    };
-    reader.onerror = () => { alert('No se pudo leer la imagen.'); activateTool('select'); };
-    reader.readAsDataURL(f);
-  });
-
-  $('ap-att-grid') && $('ap-att-grid').addEventListener('click', e => {
-    const btn = e.target.closest('[data-act]');
-    if (!btn || !activeAnnotationObject) return;
-    const act = btn.dataset.act;
-    // Navegación del carrusel
-    if (act === 'prev') { propsPanel.navAtt(-1); return; }
-    if (act === 'next') { propsPanel.navAtt(1);  return; }
-    if (act === 'goto') { propsPanel.gotoAtt(parseInt(btn.dataset.i, 10)); return; }
-
-    const list = activeAnnotationObject.data?.adjuntos || [];
-    const i = parseInt(btn.dataset.i, 10);
-    const a = list[i];
-    if (!a) return;
-
-    // Marcar como imagen principal (la que se muestra en el plano)
-    if (act === 'principal') {
-      activeAnnotationObject.data.principal = i;
-      propsPanel.refreshAttachments();
-      markup && markup.refreshThumb(activeAnnotationObject);
-      markup && markup._snapshot();
-      markup && markup._notifyLocalChange && markup._notifyLocalChange();
-      return;
-    }
-
-    if (act === 'del') {
-      const obj = activeAnnotationObject;   // fijar la figura aunque cambie la selección
-      confirmDialog.open({
-        title: 'Quitar adjunto', message: `¿Quitar "${a.name}" de esta figura?`,
-        okText: 'Quitar', danger: true,
-        onConfirm: () => {
-          obj.data.adjuntos.splice(i, 1);
-          // Reajustar el índice de la imagen principal tras el borrado
-          let p = (typeof obj.data.principal === 'number') ? obj.data.principal : 0;
-          if (i < p) p--; else if (i === p) p = 0;
-          obj.data.principal = Math.max(0, Math.min(p, obj.data.adjuntos.length - 1));
-          propsPanel.refreshAttachments();
-          markup && markup.refreshThumb(obj);
-          markup && markup._snapshot();
-          markup && markup._notifyLocalChange && markup._notifyLocalChange();
-        },
-      });
-      return;
-    }
-    // 'open' → ampliar en el lightbox
-    propsPanel.openAttachment(a);
-  });
-
-  $('att-lightbox') && $('att-lightbox').addEventListener('click', () => {
-    $('att-lightbox').style.display = 'none';
-  });
-  // Mini-toolbar: mostrar/ocultar el adjunto sobre la figura
-  $('fig-toggle-att') && $('fig-toggle-att').addEventListener('click', () => {
-    const obj = markup && markup.canvas.getActiveObject();
-    if (!obj || !obj.data || obj.data.remoto) return;   // no modificar figuras ajenas
-    const shown = obj.data.attShown !== false;
-    obj.data.attShown = !shown;                  // alterna
-    markup.refreshThumb(obj);
-    markup._snapshot && markup._snapshot();
-    $('fig-toolbar').dataset.shown = '';         // fuerza refresco del icono
-    updateFigToolbar();
-  });
-  // Mini-toolbar: ampliar la imagen en el lightbox
-  $('fig-enlarge-att') && $('fig-enlarge-att').addEventListener('click', () => {
-    const obj = markup && markup.canvas.getActiveObject();
-    const a   = obj && markup._firstImageAttachment(obj);
-    if (!a) return;
-    $('att-lightbox-img').src = a.dataUrl;
-    $('att-lightbox').style.display = 'flex';
-  });
-
-  // Evitar que inputs dentro del panel propaguen teclas globales (atajos)
-  $('annot-panel') && $('annot-panel').addEventListener('keydown', e => e.stopPropagation());
-
-  // 16. Usuarios ─────────────────────────────────────────────────────────
-  // (El dropdown de "usuario conectado" se eliminó; la lista de colaboradores y
-  //  la visibilidad por autor viven ahora dentro del menú de Marcas.)
-
-  // PostMessage desde Oracle APEX
-  // Soporta:
-  //   { action: 'setUser',   name:   'Carlos Ramírez' }            → nombre directo
-  //   { action: 'openPDF', pdfUrl:'/pdfs/p-123.pdf', docId:123 }    → abre un plano
-  //
-  // SEGURIDAD: APEX_ORIGIN viene de ./config (VITE_APEX_ORIGIN); por defecto
-  // el propio origen del visor (cuando APEX lo embebe en el mismo dominio).
-  window.addEventListener('message', e => {
-    // Acepta solo mensajes del portal APEX (o de la propia ventana en pruebas)
-    if (e.origin !== APEX_ORIGIN && e.origin !== window.location.origin) return;
-    if (!e.data || typeof e.data !== 'object') return;
-    // Código de proyecto: APEX puede enviarlo en cualquier mensaje (o uno dedicado)
-    if (e.data.codigo_proyecto != null && String(e.data.codigo_proyecto).trim() !== '') {
-      _codigoProyecto = String(e.data.codigo_proyecto).trim();
-    }
-    // Permiso de colaborador (P0_PERMISO_COLABORADOR): APEX puede enviarlo en cualquier mensaje
-    const permMsg = e.data.P0_PERMISO_COLABORADOR ?? e.data.permiso_colaborador ?? e.data.permiso;
-    if (permMsg != null) setCollabPermission(permMsg);
-    if (e.data.action === 'setUser') {
-      if (e.data.name) setCurrentUser(e.data.name);
-      // Código de usuario (USUARIO_GRABACION) — APEX puede mandarlo por postMessage
-      const cod = e.data.codigo ?? e.data.usuario_id ?? e.data.codigo_usuario;
-      if (cod != null && String(cod).trim() !== '') {
-        _currentUserId = /^\d+$/.test(String(cod)) ? Number(cod) : cod;
-        console.info('[SAF] codigo_usuario (postMessage):', _currentUserId);
-      }
-    }
-    // APEX devuelve el plano elegido para el hipervínculo → asignarlo al enlace
-    if (e.data.action === 'setLinkTarget') {
-      const tgt = linkPickTarget || (markup && markup.canvas.getActiveObject());
-      if (tgt && tgt.data?.type === 'link' && e.data.repoId != null) {
-        tgt.data.targetRepoId = e.data.repoId;
-        tgt.data.targetName   = e.data.name || `Plano ${e.data.repoId}`;
-        if (e.data.file) tgt.data.targetFile = e.data.file;
-        if (activeAnnotationObject === tgt) $('ap-link-target-name').textContent = tgt.data.targetName;
-        markup && markup._snapshot();
-        markup && markup._notifyLocalChange && markup._notifyLocalChange();
-        showHint(`Enlace → ${tgt.data.targetName}`);
-      }
-      linkPickTarget = null;
-    }
-    // Abrir plano: por id de repositorio (vía API APEX) o por URL directa
-    if (e.data.action === 'openPDF') {
-      hideViewerNotice();   // llega un plano: el aviso de "nada que mostrar" sobra
-      if (e.data.repoId != null) openPDFFromRepo(e.data.repoId, e.data.name);
-      else if (e.data.pdfUrl)    openPDFFromUrl(e.data.pdfUrl, e.data.docId, e.data.name);
-    }
-
-    // Mensaje de inicialización consolidado: identidad + proyecto + permiso + abrir plano.
-    // (codigo_proyecto y P0_PERMISO_COLABORADOR ya se aplican arriba para cualquier mensaje.)
-    if (e.data.action === 'init') {
-      const d = e.data;
-      const nombreUsuario = d.usuario_conectado || d.usuario || d.name;
-      if (nombreUsuario) setCurrentUser(nombreUsuario);
-      const cod = d.codigo_usuario ?? d.usuario_id ?? d.codigo;
-      if (cod != null && String(cod).trim() !== '') {
-        _currentUserId = /^\d+$/.test(String(cod)) ? Number(cod) : cod;
-        console.info('[SAF] codigo_usuario (init):', _currentUserId);
-      }
-      const rid = d.id_revision ?? d.id_revisiones_plano;
-      if (rid != null && /^\d+$/.test(String(rid))) _currentRevId = Number(rid);
-      // Abrir el plano (por id de repositorio o URL directa)
-      if (d.repoId != null || d.pdfUrl) {
-        hideViewerNotice();
-        if (d.repoId != null) openPDFFromRepo(d.repoId, d.nombre || d.name);
-        else                  openPDFFromUrl(d.pdfUrl, d.docId, d.nombre || d.name);
-      }
-    }
-  });
-
-  // Identificación al cargar — el NOMBRE viene directo en la URL del iframe
-  // (ya no se consulta ningún API). Se acepta cualquiera de estas claves y el
-  // valor se usa tal cual como nombre del usuario:
-  //   ?usuario=Nombre · ?usuario_conectado=Nombre · ?user=Nombre · ?nombreUsuario=Nombre
-  (function () {
-    const params  = new URLSearchParams(window.location.search);
-    const urlUser = (params.get('usuario')
-                  || params.get('usuario_conectado')
-                  || params.get('user')
-                  || params.get('nombreUsuario')
-                  || params.get('usuario_nombre')
-                  || '').trim();
-
-    // La identidad SOLO viene de la URL (APEX). Si llega vacía → Anónimo,
-    // sin recuperar ningún nombre previo del navegador (nada de "fantasmas").
-    if (urlUser) setCurrentUser(urlUser);
-    else         setCurrentUser('Anónimo');
-
-    // Id del usuario para guardar/consultar marcas: PRIMERO el parámetro de la URL
-    // (APEX lo inyecta desde su localStorage), y como respaldo el localStorage propio.
-    const uid = params.get('codigo_usuario') || params.get('usuario_id') || params.get('id_usuario');
-    if (uid && uid.trim()) {
-      _currentUserId = /^\d+$/.test(uid.trim()) ? Number(uid.trim()) : uid.trim();
-    } else {
-      try {
-        const cod = (localStorage.getItem('codigo_usuario') || '').trim();
-        if (cod) _currentUserId = /^\d+$/.test(cod) ? Number(cod) : cod;
-      } catch (e) {}
-    }
-    const rid = params.get('id_revision') || params.get('id_revisiones_plano');
-    if (rid && /^\d+$/.test(rid)) _currentRevId = Number(rid);
-
-    // Código de proyecto (P9130008_CODIGO_PROYECTO) — filtra planos-listado y rfi-listado
-    const cp = (params.get('codigo_proyecto') || params.get('proyecto') || '').trim();
-    if (cp) { _codigoProyecto = cp; console.info('[SAF] codigo_proyecto:', _codigoProyecto); }
-
-    // Permiso de colaborador (P0_PERMISO_COLABORADOR): '1' → puede guardar y descargar
-    const perm = params.get('P0_PERMISO_COLABORADOR')
-              ?? params.get('permiso_colaborador')
-              ?? params.get('permiso');
-    setCollabPermission(perm);
-    console.info('[SAF] permiso_colaborador:', _canCollaborate);
-
-    if (_currentUserId == null)
-      console.warn('[SAF] Sin codigo_usuario: USUARIO_GRABACION se guardará como 0. ' +
-                   'Pásalo en la URL (?codigo_usuario=...) o por postMessage {action:"setUser",codigo:...}.');
-    else
-      console.info('[SAF] codigo_usuario para guardar marcas:', _currentUserId);
-
-    // Abrir un plano directamente desde la URL del iframe:
-    //   por id de repositorio (vía API APEX):
-    //     /planos/?usuario_conectado=ID&repoId=123
-    //   o por URL directa de un PDF:
-    //     /planos/?usuario_conectado=ID&pdf=/pdfs/plano-123.pdf&docId=123
-    const repoId   = params.get('repoId') || params.get('id_en_repositorio');
-    const pdfParam = params.get('pdf');
-    if (repoId || pdfParam) {
-      if (repoId)   openPDFFromRepo(repoId, params.get('nombre'));
-      else          openPDFFromUrl(pdfParam, params.get('docId'), params.get('nombre'));
-    } else {
-      // Nadie ha pedido un plano. Embebido aún puede llegar por postMessage, así
-      // que el aviso espera un momento antes de aparecer.
-      scheduleViewerNotice('El visor no recibió ningún plano que mostrar. '
-        + 'Ábrelo desde el listado de planos del sistema.');
-    }
-  })();
-
-  /* ── Atajos de teclado ─────────────────────────────────────────────── */
-  document.addEventListener('keydown', e => {
-    const tag=document.activeElement.tagName;
-    if (tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
-    if (ui.modalCal.style.display==='flex' || ui.modalStamp.style.display==='flex') return;
-
-    if (e.ctrlKey||e.metaKey) {
-      const map = {
-        z:()=>markup&&markup.undo(), y:()=>markup&&markup.redo(),
-        s:()=>saveSession(),
-        '=':()=>markup&&markup.zoomStep(1), '+':()=>markup&&markup.zoomStep(1),
-        '-':()=>markup&&markup.zoomStep(-1),
-        '0':()=>markup&&markup.fitToCanvas(),   // Ctrl/Cmd+0 → ajustar a pantalla
-        '1':()=>markup&&markup.zoomTo(1),        // Ctrl/Cmd+1 → 100%
-      };
-      const key=(e.shiftKey&&e.key==='Z')?'y':e.key;
-      if (map[key]) { map[key](); e.preventDefault(); }
-      return;
-    }
-
-    // Solo navegación/utilidad; las FIGURAS ya no tienen atajo de teclado
-    const tools={v:'select',h:'pan',e:'eraser'};
-    if (tools[e.key.toLowerCase()]) { activateTool(tools[e.key.toLowerCase()]); return; }
-
-    switch (e.key) {
-      case 'f': case 'F': markup&&markup.fitToCanvas(); break;
-      case 'p': case 'P': propsPanel.toggle(); break;
-    }
-  });
-
-  /* ── Utilidades UI ─────────────────────────────────────────────────── */
-  function enableDocs(on) {
-    [ui.btnRotateLeft,ui.btnRotateRight,ui.btnZoomIn,ui.btnZoomOut,ui.btnFit,
-     ui.btnCalibrate,ui.btnClear,
-     $('btn-save-marks'), $('btn-download-doc'), $('btn-compare'), $('btn-snapshot')]
-     .forEach(el => { if(el) el.disabled=!on; });
-    ui.btnUndo.disabled=true; ui.btnRedo.disabled=true;
-  }
-
-  function setStatus(msg) { ui.tbStatus.textContent=msg; }
-
-  /** Badge persistente con la escala calibrada (no se pierde al usar overlay) */
-  function updateScaleBadge() {
-    const el = $('scale-info');
-    if (!el) return;
-    if (scaleManager.isCalibrated()) {
-      el.innerHTML = '<i data-lucide="ruler"></i> ';
-      el.appendChild(document.createTextNode(`1 ${scaleManager.unit} = ${scaleManager.pxPerUnit.toFixed(1)} px`));
-      renderIcons(el);
-      el.style.display = '';
-    } else {
-      el.style.display = 'none';
-    }
-  }
-
-  let hintTimer;
-  function showHint(msg, persist=false) {
-    const el=ui.drawHint;
-    clearTimeout(hintTimer);
-    if (!msg) { el.style.display='none'; return; }
-    // Icono opcional con la sintaxis  [[icon:nombre]] texto…  El texto SIEMPRE se
-    // inserta como nodo de texto (nunca como HTML) → seguro con datos de usuario.
-    el.innerHTML = '';
-    let text = msg;
-    const m = /^\s*\[\[icon:([a-z0-9-]+)\]\]\s*/i.exec(msg);
-    if (m) {
-      const ic = document.createElement('i');
-      ic.setAttribute('data-lucide', m[1]);
-      el.appendChild(ic);
-      text = msg.slice(m[0].length);
-    }
-    el.appendChild(document.createTextNode(text));
-    renderIcons(el);
-    el.style.display='block';
-    // Las leyendas de acción se auto-ocultan a los 5s; los hints de herramienta persisten.
-    if (!persist) hintTimer=setTimeout(()=>el.style.display="none", HINT_AUTO_HIDE_MS);
-  }
-
-})();
+    session.pages[plan.getCurrentPage()] = markup.getMarkupJSON();
+    session.rotation = plan.getRotation();
+    if (scaleManager.isCalibrated()) session.scale = calibration.buildScaleObj();
+    exportSessionFile(session);
+  },
+});

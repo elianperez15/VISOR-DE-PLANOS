@@ -1,0 +1,80 @@
+/* feedback.css — Leyenda flotante sobre el lienzo y toast de guardado */
+
+/* ── Indicador modo dibujo ── */
+.draw-hint {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-size: var(--fs-base);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  pointer-events: none;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.draw-hint .lucide { width: 15px; height: 15px; flex-shrink: 0; color: var(--accent); }
+
+/* ── Toast de guardado ── */
+.save-toast {
+  position: fixed;
+  top: calc(var(--toolbar-h, 44px) + 14px);
+  left: 50%;
+  transform: translate(-50%, -14px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 34px rgba(0,0,0,.5);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  z-index: 3000;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity .22s ease, transform .22s ease, visibility .22s;
+}
+.save-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
+}
+.save-toast-ic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.save-toast-ic .lucide { width: 18px; height: 18px; }
+
+/* Estado: guardando (spinner) */
+.save-toast.is-loading { border-color: var(--accent-border); }
+.save-toast.is-loading .save-toast-ic {
+  border: 2px solid var(--accent-bg-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: save-spin .7s linear infinite;
+}
+@keyframes save-spin { to { transform: rotate(360deg); } }
+
+/* Estado: éxito */
+.save-toast.is-success { border-color: #22c55e55; }
+.save-toast.is-success .save-toast-ic { color: #22c55e; }
+.save-toast.is-success .save-toast-msg { color: var(--text); }
+
+/* Estado: error */
+.save-toast.is-error { border-color: #ef444455; }
+.save-toast.is-error .save-toast-ic { color: #ef4444; }

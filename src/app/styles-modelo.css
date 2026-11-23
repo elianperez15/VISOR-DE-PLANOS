@@ -1,0 +1,14 @@
+/* ──────────────────────────────────────────────────────────────────────
+   styles-modelo.css — Hoja de estilos del visor del modelo 3D (/modelo/)
+
+   Reutiliza la base y la barra del visor de planos; sólo añade lo del 3D.
+   Aquí se fija el ORDEN de la cascada, igual que en styles.css.
+   ────────────────────────────────────────────────────────────────────── */
+@import './styles/base.css';
+@import '../compartido/ui/toolbar.css';
+@import '../compartido/ui/tool-rail.css';
+@import '../compartido/ui/modals.css';
+@import '../compartido/ui/confirm.css';
+@import '../compartido/ui/licenses.css';
+@import '../modelo-3d/model-viewer.css';
+@import '../modelo-3d/model-panels.css';

@@ -1,0 +1,2 @@
+# Nmap 7.98 scan initiated Thu Oct 22 14:41:00 2026 as: nmap -sV -sC -O -p- --open -oN nmap_metasploitable.txt 192.168.50.44
+# Nmap done at Thu Oct 22 14:41:04 2026 -- 1 IP address (0 hosts up) scanned in 3.20 seconds

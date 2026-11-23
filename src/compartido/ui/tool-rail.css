@@ -1,0 +1,194 @@
+/* tool-rail.css — Riel flotante de herramientas (vertical / horizontal, grupos, flyouts).
+   Lo usan los dos visores: anotaciones del plano (2D) y herramientas del modelo (3D). */
+
+/* ── Riel vertical de herramientas FLOTANTE (estilo Procore) ── */
+.tool-rail {
+  position: absolute;
+  top: 70px;            /* JS lo centra con top/left explícitos. NO usar transform:
+                           rompe el position:fixed de los flyouts (submenús). */
+  left: 12px;
+  max-height: calc(100% - 24px);
+  width: 52px;
+  flex-shrink: 0;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  z-index: 400;
+}
+.tool-rail::-webkit-scrollbar { display: none; }
+.tool-rail.rail-dragging {
+  transition: none;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--accent, #3b82f6);
+  cursor: grabbing;
+}
+
+/* Asa para arrastrar el riel flotante */
+.rail-drag {
+  width: 40px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #94a3b8);
+  cursor: grab;
+  border-radius: 8px;
+  flex-shrink: 0;
+  margin-bottom: 2px;
+  touch-action: none;
+  user-select: none;
+}
+.rail-drag:hover { background: rgba(255, 255, 255, 0.08); color: var(--text, #e5e7eb); }
+.rail-drag:active { cursor: grabbing; }
+.rail-drag .lucide { width: 18px; height: 18px; }
+
+.tool-rail .tb-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  justify-content: center;
+  font-size: var(--fs-4xl);
+}
+.rail-sep {
+  width: 28px;
+  height: 1px;
+  background: var(--border);
+  margin: 3px 0;
+  flex-shrink: 0;
+}
+/* Botón de grupo en el riel: solo icono + caret (el nombre se oculta) */
+.tool-rail .rail-group {
+  flex-direction: column;
+  gap: 1px;
+  height: 40px;
+}
+.tool-rail .rail-group .tool-gname { display: none; }
+.tool-rail .rail-group .tb-caret   { font-size: var(--fs-3xs); opacity: .55; line-height: 1; }
+
+/* Control pequeño para alternar la orientación del riel (tipo asa, discreto) */
+.rail-orient-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #94a3b8);
+  opacity: .6;
+  border-radius: 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity .13s, background .13s, color .13s;
+}
+.rail-orient-btn:hover { opacity: 1; background: rgba(255,255,255,.08); color: var(--text, #e5e7eb); }
+.rail-orient-btn .lucide { width: 13px; height: 13px; }
+
+/* ── Riel en orientación HORIZONTAL ── */
+.tool-rail.rail-horizontal {
+  flex-direction: row;
+  width: auto;
+  height: 56px;
+  max-width: calc(100% - 24px);
+  max-height: none;
+  padding: 6px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.tool-rail.rail-horizontal .rail-drag {
+  width: 18px;
+  height: 40px;
+  margin-bottom: 0;
+  margin-right: 2px;
+}
+.tool-rail.rail-horizontal .rail-drag .lucide { transform: rotate(90deg); }
+.tool-rail.rail-horizontal .rail-orient-btn {
+  width: 16px;
+  height: 22px;
+}
+.tool-rail.rail-horizontal .rail-sep {
+  width: 1px;
+  height: 28px;
+  margin: 0 3px;
+}
+.tool-rail.rail-horizontal .rail-group { height: 44px; }
+
+/* ════════ Riel flotante — mejoras visuales ════════ */
+.tool-rail {
+  gap: 6px;
+  padding: 10px 6px;
+  background: linear-gradient(180deg, var(--rail-grad-1) 0%, var(--rail-grad-2) 100%);
+  border-color: #36406040;
+}
+
+/* Botones del riel: más redondeados, transición suave */
+.tool-rail .tb-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  color: var(--text-muted);
+  transition: background .15s, color .15s, box-shadow .15s, transform .08s;
+}
+@media (hover: hover) {
+  .tool-rail .tb-btn:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+}
+.tool-rail .tb-btn:active:not(:disabled) { transform: scale(.93); }
+.tool-rail .tb-btn.tb-btn-active {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+.tool-rail .tb-btn .lucide { width: 20px; height: 20px; }
+
+/* Separadores más sutiles */
+.rail-sep { width: 26px; background: var(--border); margin: 4px 0; }
+
+/* ── Botones de GRUPO (con submenú): icono + etiqueta + chevron ── */
+.tool-rail .rail-group {
+  position: relative;
+  width: 42px;
+  height: 46px;
+  gap: 2px;
+  justify-content: center;
+}
+.tool-rail .rail-group .tool-gicon { display: flex; }
+.tool-rail .rail-group .tool-gicon .lucide { width: 20px; height: 20px; }
+/* Indicador "tiene submenú": triangulito en la esquina inferior derecha */
+.tool-rail .rail-group .tb-caret {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  font-size: 0;
+  opacity: .85;
+}
+.tool-rail .rail-group .tb-caret .lucide { width: 11px; height: 11px; }
+.tool-rail .rail-group.tb-btn-active .tb-caret { opacity: 1; }
+
+/* ── Flyout del submenú (a la derecha del riel) ── */
+.tb-dropdown {
+  border-radius: 10px;
+  padding: 6px;
+  border-color: #3a4560;
+  box-shadow: 0 16px 40px rgba(0,0,0,.7);
+  animation: flyout-in .12s ease-out;
+}
+@keyframes flyout-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.tb-drop-item { padding: 8px 12px; border-radius: 7px; gap: 10px; }
+.tb-drop-item .lucide { width: 17px; height: 17px; color: var(--text-muted); }
+.tb-drop-item:hover:not(:disabled) .lucide { color: var(--accent); }

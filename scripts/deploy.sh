@@ -86,8 +86,13 @@ npm run build
 
 echo "   Copiando dist/ → ${WEB_ROOT}"
 # --exclude '/server/' como salvaguarda por si hubiera un server/ bajo el web root.
-rsync -avz --delete --exclude '/server/' -e "ssh ${SSH_OPTS[*]}" \
+# --exclude '*.map': los source maps NO se publican (con ellos, DevTools muestra
+# el código original y la estructura de carpetas). Se quedan en dist/ local.
+rsync -avz --delete --exclude '/server/' --exclude '*.map' -e "ssh ${SSH_OPTS[*]}" \
   dist/ "${SERVER}:${WEB_ROOT}/"
+# --delete no toca lo excluido: borrar los .map que hubieran subido deploys anteriores.
+# (Sólo en assets/: NO usar --delete-excluded, que también borraría /server/.)
+ssh "${SSH_OPTS[@]}" "${SERVER}" "find '${WEB_ROOT}/assets' -maxdepth 1 -type f -name '*.map' -delete"
 
 echo "   Copiando collab-server.js → ${COLLAB_DIR}"
 rsync -avz -e "ssh ${SSH_OPTS[*]}" \

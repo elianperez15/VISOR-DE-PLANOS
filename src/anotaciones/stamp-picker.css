@@ -1,0 +1,94 @@
+/* stamp-picker.css — Modal de sellos y etiquetas */
+
+/* ── Modal Sello ── */
+.modal-stamp { width: 420px; }
+
+.stamp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.stamp-opt {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .13s;
+  text-align: center;
+}
+.stamp-opt:hover  { background: var(--surface-hover); border-color: var(--accent); }
+.s-approved  { border-color: #16a34a40; color: #4ade80; }
+.s-rejected  { border-color: #dc262640; color: var(--danger-soft); }
+.s-review    { border-color: #d9770640; color: var(--warning-soft); }
+.s-info      { border-color: #2563eb40; color: #60a5fa; }
+.s-warning   { border-color: #b4530940; color: var(--warning); }
+.s-draft     { border-color: #4b556340; color: #9ca3af; }
+.s-nci       { border-color: #7c3aed40; color: #a78bfa; }
+.s-rfi       { border-color: #089198; color: #22d3ee; }
+
+/* ── Etiquetas de estado en el modal de sellos ── */
+.stamp-section-title {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  font-weight: 600;
+  padding: 10px 0 7px;
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+}
+
+.label-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+/* Botón de etiqueta: imita el aspecto del objeto en el lienzo */
+.stamp-label {
+  position: relative;
+  padding: 7px 12px;
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: 'Arial Black', Impact, sans-serif;
+  font-size: var(--fs-sm);
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  text-align: center;
+  transition: all .13s;
+  /* El color de borde y texto se pone inline vía JS al construirlos,
+     o aquí sobrescribimos con el valor del atributo data-color.
+     Fabric.js genera el render; el modal es solo el picker.       */
+}
+
+/* Variantes de color — deben coincidir con data-color */
+.stamp-label[data-color="var(--accent)"] { color:var(--accent); border:2px solid var(--accent); }
+.stamp-label[data-color="var(--success)"] { color:var(--success); border:2px solid var(--success); }
+.stamp-label[data-color="#06b6d4"] { color:#06b6d4; border:2px solid #06b6d4; }
+.stamp-label[data-color="#8b5cf6"] { color:#8b5cf6; border:2px solid #8b5cf6; }
+.stamp-label[data-color="var(--warning)"] { color:var(--warning); border:2px solid var(--warning); }
+.stamp-label[data-color="var(--text-faint)"] { color:var(--text-faint); border:2px solid var(--text-faint); }
+.stamp-label[data-color="var(--danger)"] { color:var(--danger); border:2px solid var(--danger); }
+.stamp-label[data-color="var(--text-faint)"] { color:var(--text-faint); border:2px solid var(--text-faint); }
+.stamp-label[data-color="var(--danger-strong)"] { color:var(--danger-strong); border:2px solid var(--danger-strong); }
+.stamp-label[data-color="var(--warning-strong)"] { color:var(--warning-strong); border:2px solid var(--warning-strong); }
+
+.stamp-label:hover { opacity: .75; transform: scale(1.04); }
+
+/* Efecto trama en las etiquetas tipo hatch dentro del modal */
+.stamp-label[data-style="hatch"] {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    rgba(255,255,255,.06) 4px,
+    rgba(255,255,255,.06) 5px
+  );
+}

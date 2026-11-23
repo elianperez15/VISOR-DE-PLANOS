@@ -17,10 +17,6 @@
       <!-- ── Acciones (después) ── -->
       <!-- Marcas: mostrar/ocultar + visibilidad por colaborador -->
 
-      <!-- Inputs ocultos -->
-      <input type="file" id="session-input" accept=".json" hidden>
-      <input type="file" id="xfdf-input" accept=".xfdf,.xml" hidden>
-
       <div class="tb-dropdown-wrap" id="markup-wrap">
         <button class="tb-btn tb-dropdown-btn tb-btn-active" id="btn-markup-menu"
           title="Marcas: mostrar/ocultar · por colaborador">
@@ -281,7 +277,7 @@
 
         <!-- Aviso cuando no hay nada que mostrar (arranca OCULTO). El visor sólo
              abre planos del file server, así que si no llega ninguno hay que
-             decir por qué — ver showViewerNotice() en main.ts -->
+             decir por qué — ver src/plano/viewer-notice.ts -->
         <div class="viewer-notice" id="viewer-notice" style="display:none">
           <div class="viewer-notice-box">
             <div class="viewer-notice-icon"><i data-lucide="alert-circle"></i></div>

@@ -1,0 +1,42 @@
+/* plan-links.css — Hipervínculo: destino en el panel */
+
+/* Hipervínculo: pista */
+.ap-link-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-style: italic;
+}
+
+/* ── Hipervínculo: selector de plano destino ── */
+.ap-link-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ap-link-target-name {
+  flex: 1 1 100%;
+  font-size: var(--fs-base);
+  color: var(--text);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ap-link-clear {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 5px;
+  cursor: pointer;
+  padding: 4px 7px;
+  font-size: var(--fs-base);
+  display: inline-flex;
+  align-items: center;
+}
+.ap-link-clear .lucide { width: 14px; height: 14px; }
+.ap-link-clear:hover { color: #fff; background: var(--danger); border-color: var(--danger); }

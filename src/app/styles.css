@@ -1,0 +1,26 @@
+/* ──────────────────────────────────────────────────────────────────────
+   styles.css — Hoja de estilos del visor
+
+   Cada dominio tiene su CSS junto a su código. Aquí sólo se fija el ORDEN de
+   la cascada: base primero y responsive al final (sobrescribe al resto).
+   ────────────────────────────────────────────────────────────────────── */
+@import './styles/base.css';
+@import '../compartido/ui/toolbar.css';
+@import '../rfi/rfi-cloud-button.css';
+@import '../compartido/ui/tool-rail.css';
+@import '../mediciones/calibration.css';
+@import '../plano/plano.css';
+@import '../compartido/ui/feedback.css';
+@import '../mediciones/area-panel.css';
+@import '../revisiones/compare-revisions.css';
+@import '../exportacion/region-snapshot.css';
+@import '../compartido/ui/modals.css';
+@import '../anotaciones/stamp-picker.css';
+@import '../anotaciones/properties-panel.css';
+@import '../anotaciones/attachments.css';
+@import '../hipervinculos/plan-links.css';
+@import '../colaboracion/collaborators.css';
+@import '../compartido/ui/list-picker.css';
+@import '../compartido/ui/confirm.css';
+@import '../compartido/ui/licenses.css';
+@import './styles/responsive.css';

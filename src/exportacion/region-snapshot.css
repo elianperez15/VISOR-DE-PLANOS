@@ -1,0 +1,42 @@
+/* region-snapshot.css — Barra de confirmación de la captura por selección */
+
+/* Barra de confirmación al seleccionar un área para descargar */
+.region-bar {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(0,0,0,.35);
+  padding: 8px 10px 8px 14px;
+  z-index: 350;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+.region-bar-msg { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.region-bar-msg .lucide { width: 16px; height: 16px; color: var(--accent); }
+.region-bar-actions { display: flex; align-items: center; gap: 6px; }
+.region-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .13s, border-color .13s, opacity .13s;
+}
+.region-btn .lucide { width: 15px; height: 15px; }
+.region-btn.region-cancel:hover { background: var(--surface-hover); }
+.region-btn.region-ok { background: var(--accent); color: #fff; border-color: transparent; }
+.region-btn.region-ok:hover:not(:disabled) { background: var(--accent-strong); }
+.region-btn.region-ok:disabled { opacity: .45; cursor: not-allowed; }

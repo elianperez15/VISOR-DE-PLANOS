@@ -1,0 +1,130 @@
+/* compare-revisions.css — Barra de comparación de revisiones y loader del diff */
+
+/* ── Barra de comparación de revisiones ── */
+.compare-bar {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0,0,0,.55);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 300;
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+/* Carpeta: ahora es un botón que cambia el plano a comparar */
+.compare-bar .cmp-icon {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 7px;
+  transition: background .13s, color .13s;
+}
+.compare-bar .cmp-icon:hover { background: var(--accent-bg); color: var(--accent-strong); }
+.compare-bar .cmp-icon .lucide { width: 19px; height: 19px; }
+
+/* Dropdown de descargar como imagen — reutiliza el look de los submenús
+   (.tb-dropdown / .tb-drop-item), pero anclado y abriendo hacia arriba. */
+.cmp-dl-wrap { position: relative; display: inline-flex; }
+.cmp-dl-menu {
+  display: none;
+  flex-direction: column;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  min-width: 232px;
+  max-width: calc(100vw - 24px);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  padding: 4px;
+  z-index: 400;
+}
+.cmp-dl-menu.open { display: flex; }
+
+/* Revisiones A/B — una línea cada una, nombre truncado con tooltip */
+.compare-bar .cmp-revs { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.compare-bar .cmp-rev { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.compare-bar .cmp-tag {
+  font-size: var(--fs-2xs); font-weight: 700; letter-spacing: .3px;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 20px;
+  flex-shrink: 0; line-height: 1.4;
+}
+.compare-bar .cmp-tag-a { background: rgba(37,99,235,.15); color: #2563eb; }
+.compare-bar .cmp-tag-b { background: rgba(225,29,72,.15); color: #e11d48; }
+.compare-bar .cmp-name {
+  color: var(--text); font-size: var(--fs-base);
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Separadores verticales */
+.compare-bar .cmp-div { width: 1px; align-self: stretch; background: var(--border); flex-shrink: 0; margin: 2px 0; }
+
+.compare-bar .cmp-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.compare-bar .cmp-actions button {
+  width: 30px; height: 30px;
+  background: transparent; border: none; color: var(--text-muted);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 7px; transition: background .13s, color .13s;
+}
+.compare-bar .cmp-actions button .lucide { width: 17px; height: 17px; }
+.compare-bar .cmp-actions button:hover { background: var(--surface-hover); color: var(--text); }
+/* En modo ajuste el botón muestra ✓ y se pone verde = "Aplicar / confirmar" */
+.compare-bar #btn-compare-align.tb-btn-active { background: var(--success); color: #fff; }
+.compare-bar #btn-compare-align.tb-btn-active:hover { background: var(--success-strong); color: #fff; }
+
+/* Mientras se calcula el diff, la barra queda bloqueada (no se aceptan cambios) */
+.compare-bar.is-busy { pointer-events: none; }
+.compare-bar.is-busy .cmp-actions { opacity: .45; }
+
+/* ── Loader ligero: calculando diferencias de comparación ── */
+.compare-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-size: var(--fs-md);
+  color: var(--text);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .20);
+  z-index: 300;
+  pointer-events: none;
+}
+.compare-loading .cmp-spin {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid var(--accent-bg-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: save-spin .7s linear infinite;
+  flex-shrink: 0;
+}
+.area-panel button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+.area-panel button:hover { color: var(--text); }

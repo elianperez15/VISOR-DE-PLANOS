@@ -1,0 +1,320 @@
+/* properties-panel.css — Panel de propiedades de la anotación (incluye el carrusel de adjuntos) */
+
+/* Botón toggle del panel de propiedades */
+#btn-toggle-panel {
+  font-size: var(--fs-3xl);
+  letter-spacing: 0;
+  opacity: .65;
+  transition: opacity .13s, background .13s;
+}
+#btn-toggle-panel:hover          { opacity: 1; }
+#btn-toggle-panel.tb-btn-active  { opacity: 1; color: var(--accent); }
+
+/* ══════════════════════════════════════════
+   PANEL DE PROPIEDADES DE ANOTACIÓN
+   ══════════════════════════════════════════ */
+.annot-panel {
+  position: fixed;
+  top: var(--toolbar-h);
+  right: 0;
+  width: 292px;
+  height: calc(100vh - var(--toolbar-h));
+  background: var(--bg-toolbar);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 800;
+  box-shadow: -8px 0 36px rgba(0,0,0,.5);
+  overflow: hidden;
+  /* entrada suave */
+  animation: ap-slide-in .17s ease;
+}
+@keyframes ap-slide-in {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Cabecera */
+.ap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ap-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text);
+}
+.ap-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-lg);
+  padding: 2px 7px;
+  border-radius: 4px;
+  transition: background .12s;
+  line-height: 1;
+}
+.ap-close:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Identidad (autor / fecha) */
+.ap-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.ap-id-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.ap-id-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+.ap-id-autor {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ap-id-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cuerpo scrollable */
+.ap-body {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.ap-body::-webkit-scrollbar       { width: 5px; }
+.ap-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Secciones */
+.ap-section {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--surface-inset);
+}
+.ap-section:last-child { border-bottom: none; }
+
+.ap-section-label {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  font-weight: 600;
+  margin-bottom: 9px;
+}
+
+/* ── Campos del panel ── */
+.ap-field { margin-bottom: 9px; }
+.ap-field:last-child { margin-bottom: 0; }
+.ap-field label {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.ap-field input[type="text"] {
+  width: 100%;
+  height: 28px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: var(--fs-base);
+  padding: 0 8px;
+  outline: none;
+  transition: border-color .13s;
+}
+.ap-field input[type="text"]:focus       { border-color: var(--accent); }
+.ap-field input[type="text"]::placeholder { color: #3a4870; }
+.ap-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Adjuntos (fotos / archivos) */
+.ap-att-count { color: var(--text-muted); font-weight: normal; }
+.ap-att-add {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; margin-bottom: 8px;
+  background: var(--surface-inset); border: 1px dashed var(--border); border-radius: 5px;
+  color: var(--text); font-size: var(--fs-base); cursor: pointer;
+  transition: border-color .13s, background .13s;
+}
+.ap-att-add:hover { border-color: var(--accent); background: #262d42; }
+.ap-att-add .lucide { width: 15px; height: 15px; }
+/* ── Carrusel de adjuntos ── */
+.ap-car-empty { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 0; }
+.ap-carousel { display: flex; flex-direction: column; gap: 8px; }
+.ap-car-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 150px;
+  overflow: hidden;
+}
+.ap-car-viewport {
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* La imagen se adapta al espacio SIN recortarse ni deformarse */
+.ap-car-img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block; }
+.ap-car-fileicon .lucide { width: 42px; height: 42px; color: var(--text-muted); }
+.ap-car-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff;
+  cursor: pointer; z-index: 2;
+  transition: background .13s;
+}
+.ap-car-nav:hover { background: var(--accent); }
+.ap-car-nav .lucide { width: 18px; height: 18px; }
+.ap-car-prev { left: 6px; }
+.ap-car-next { right: 6px; }
+.ap-car-badge {
+  position: absolute;
+  top: 6px; left: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 20px;
+  background: var(--accent); color: #fff;
+  font-size: var(--fs-2xs); font-weight: 700;
+}
+.ap-car-badge .lucide { width: 11px; height: 11px; }
+.ap-car-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ap-car-name {
+  font-size: var(--fs-xs); color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ap-car-count { font-size: var(--fs-2xs); color: var(--text-muted); flex-shrink: 0; }
+.ap-car-actions { display: flex; align-items: center; gap: 6px; }
+.ap-car-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-inset);
+  color: var(--text); font-size: var(--fs-xs); cursor: pointer;
+  transition: background .13s, border-color .13s, color .13s;
+}
+.ap-car-btn:first-child { flex: 1; justify-content: center; }
+.ap-car-btn .lucide { width: 15px; height: 15px; }
+.ap-car-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ap-car-btn:disabled { opacity: .6; cursor: default; color: var(--accent); border-color: var(--accent-border); }
+.ap-car-btn-del:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.ap-car-dots { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.ap-car-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  border: none; padding: 0; cursor: pointer;
+  background: var(--border);
+  transition: background .13s, transform .13s;
+}
+.ap-car-dot.on { background: var(--text); transform: scale(1.2); }
+.ap-car-dot.principal { background: var(--accent); }
+
+/* Apariencia: selectores de color */
+.ap-style-row { display: flex; gap: 10px; margin-bottom: 9px; }
+.ap-style-color {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.ap-style-color input[type="color"] {
+  width: 34px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* ── Textarea descripción ── */
+.ap-textarea {
+  width: 100%;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: var(--fs-base);
+  padding: 7px 8px;
+  outline: none;
+  resize: vertical;
+  min-height: 68px;
+  font-family: inherit;
+  line-height: 1.5;
+  transition: border-color .13s;
+}
+.ap-textarea:focus       { border-color: var(--accent); }
+.ap-textarea::placeholder { color: #3a4870; }
+
+.ap-char-count {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 4px;
+}
+
+/* ── Banner de solo lectura en el panel de propiedades ── */
+.ap-readonly-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: var(--warning);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+.ap-readonly-banner .lucide { width: 15px; height: 15px; }
+
+/* Campos deshabilitados en modo solo lectura */
+.annot-panel.ap-readonly input:disabled,
+.annot-panel.ap-readonly textarea:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

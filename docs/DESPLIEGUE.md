@@ -168,9 +168,8 @@ WebSocket: sin cursores ajenos, sin ver marcas de otros en vivo, sin panel de
 colaboradores, y sin el bucle de reintentos que si no correría cada 8 segundos.
 
 **No afecta a la persistencia.** Guardar y cargar marcas, la calibración de
-escala y la rotación van por HTTP contra ORDS (`features/collab-sync.ts`), que es
-independiente del WebSocket. Es una confusión fácil porque el archivo se llama
-"collab-sync", pero es la capa de guardado, no la de tiempo real.
+escala y la rotación van por HTTP contra ORDS (`src/persistencia/markup-store.ts`),
+que es independiente del WebSocket (`src/colaboracion/`).
 
 El microservicio `saf-collab` sigue instalado y corriendo en el servidor. Para
 reactivar la colaboración:
@@ -179,6 +178,75 @@ reactivar la colaboración:
 # .env.production → VITE_COLLAB_ENABLED=true
 npm run deploy
 ```
+
+---
+
+## Cabeceras de seguridad (una vez, en el servidor)
+
+`server/security-headers.inc` es el archivo del servidor (`/etc/nginx/conf.d/`)
+con lo que le faltaba: la **CSP** (qué puede cargar el visor y que **sólo APEX**
+pueda embeberlo) y el **404 para los `.map`**. Es autocontenido: no requiere
+cambios en `nginx.conf`. HSTS sigue en el `server :443`, como antes.
+
+```bash
+sudo cp /etc/nginx/conf.d/security-headers.inc /etc/nginx/conf.d/security-headers.inc.bak
+# copiar server/security-headers.inc → /etc/nginx/conf.d/security-headers.inc
+sudo nginx -t && sudo systemctl reload nginx
+# Comprobar
+curl -sI https://planos.aicsacorp.com/ | grep -i content-security
+curl -s -o /dev/null -w "%{http_code}\n" https://planos.aicsacorp.com/assets/x.js.map   # 404
+```
+
+`frame-ancestors` permite embeber el visor sólo desde `dev.aicsacorp.com` y
+`saf.aicsacorp.com`. Si APEX se sirve desde otro dominio, agregarlo en la línea
+`Content-Security-Policy` de security-headers.inc; si no, el iframe quedará en blanco.
+
+---
+
+## Source maps: no se publican
+
+El build genera los `.map` en `dist/` (`sourcemap: 'hidden'`), pero los bundles
+no los referencian y `deploy.sh` no los sube, y borra los de despliegues
+anteriores. Así DevTools no muestra el código original ni las carpetas de `src/`.
+Si hace falta descifrar un error de producción, los `.map` están en tu `dist/` local.
+
+---
+
+## Modelo 3D (IFC): una sola vez en el servidor
+
+El visor 3D es otra página del mismo despliegue: **`https://planos.aicsacorp.com/modelo/`**
+(el de planos sigue en `/`). `deploy.sh` sube las dos y el `location /` actual
+(`try_files $uri $uri/ /index.html`) ya sirve `/modelo/`: no hay reglas nuevas.
+
+El visor 3D descarga dos archivos más que hay que servir con el tipo correcto.
+`deploy.sh` los sube solos (van dentro de `dist/`), pero **nginx** necesita
+saber qué son. Una sola vez, en `/etc/nginx/conf.d/default.conf` (los bloques
+ya están en `server/nginx-prod.conf`):
+
+| Archivo | Content-Type | Dónde está |
+|---|---|---|
+| `web-ifc.wasm` | `application/wasm` | `/web-ifc/<versión>/` (lo copia `scripts/copy-web-ifc.mjs` en cada build) |
+| `worker-*.mjs` | `application/javascript` | `/assets/` (nombre con hash) |
+
+```bash
+ssh adminsafvsp@192.168.50.163 'cat /etc/nginx/conf.d/security-headers.inc'
+```
+
+Si ese archivo define una `Content-Security-Policy`, añade `'wasm-unsafe-eval'`
+a `script-src` y `worker-src 'self' blob:`; sin eso el navegador se niega a
+compilar el WebAssembly.
+
+Comprobar tras desplegar (el número de versión es el de `web-ifc` en `package.json`):
+
+```bash
+curl -sI https://planos.aicsacorp.com/web-ifc/0.0.77/web-ifc.wasm | grep -i content-type   # application/wasm
+curl -s  https://planos.aicsacorp.com/ | grep -o '/assets/index-[^"]*\.js'                # y luego, en Network,
+                                                                                          # worker-*.mjs → application/javascript
+```
+
+El modelo se pide al mismo endpoint `documento` que el PDF: el handler ORDS
+debe devolver el archivo tal cual, sea del tipo que sea. Si los IFC grandes
+tardan, el límite que importa es el de Cloudflare (100 s hasta el primer byte).
 
 ---
 
@@ -239,9 +307,7 @@ VITE_ORDS_BASE=https://saf.aicsacorp.com/ords/safws
 
 Requiere que ese ORDS acepte CORS desde `http://127.0.0.1:8080`.
 
-## Nota: `npm run typecheck` falla
+## Nota: `npm run typecheck`
 
-Falla desde antes de esta limpieza, en `markup-layer.ts` y `main.ts`: son
-archivos `.ts` que en realidad son JavaScript sin campos de clase declarados.
-**No bloquea el build** — Vite no hace typecheck. Si algún día quieres ponerlo en
-verde, es trabajo aparte de declarar los campos de cada clase.
+Pasa sin errores. Vite no hace typecheck al compilar, así que conviene
+correrlo antes de desplegar: `npm run typecheck && npm run deploy`.

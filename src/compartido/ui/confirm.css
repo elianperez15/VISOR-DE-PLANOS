@@ -1,0 +1,48 @@
+/* confirm.css — Modal de confirmación */
+
+/* ── Modal de confirmación (acciones destructivas) ── */
+.confirm-card {
+  width: min(380px, 92vw);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  padding: 22px 22px 18px;
+  text-align: center;
+}
+.confirm-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--danger);
+}
+.confirm-icon .lucide { width: 26px; height: 26px; }
+.confirm-title {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.confirm-msg {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+.confirm-btn {
+  border: 1px solid var(--border);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .13s, border-color .13s;
+}
+.confirm-cancel { background: transparent; color: var(--text); }
+.confirm-cancel:hover { background: var(--surface-hover); }
+.confirm-ok { background: var(--accent); color: #fff; border-color: transparent; }
+.confirm-ok:hover { filter: brightness(1.08); }
+.confirm-ok.confirm-danger { background: var(--danger); }

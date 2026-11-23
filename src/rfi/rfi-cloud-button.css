@@ -1,0 +1,26 @@
+/* rfi-cloud-button.css — Botón "Nube RFI" del riel: nube roja con la etiqueta "RFI" superpuesta.
+   Va ANTES de compartido/ui/tool-rail.css en la cascada (ver app/styles.css). */
+
+.tool-rail .rfi-cloud-btn { color: var(--aicsa-red); }
+@media (hover: hover) {
+  .tool-rail .rfi-cloud-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--aicsa-red); }
+}
+.rfi-cloud-ic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rfi-cloud-tag {
+  position: absolute;
+  bottom: 100%;               /* justo arriba del icono */
+  left: 100%;                 /* alineado a la derecha */
+  transform: translate(-70%, 4px);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .2px;
+  line-height: 1;
+  color: currentColor;
+  pointer-events: none;
+  white-space: nowrap;
+}

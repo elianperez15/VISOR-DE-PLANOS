@@ -1,0 +1,218 @@
+/* model-viewer.css — Visor del modelo 3D (página /modelo/) */
+
+.tb-model-name {
+  max-width: 260px;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── Bajo la barra: [panel Edificio] [área del modelo, con el riel] [panel Propiedades] ── */
+.model-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.model-area {            /* contenedor del riel flotante (rail-drag.ts lo mantiene dentro) */
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  /* Medidas del cubo de navegación (las usa .navcube y sus seis caras). */
+  --navcube-size: 84px;
+  --navcube-margin: 28px;   /* separación del borde inferior y derecho */
+}
+.model-wrapper {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: linear-gradient(180deg, #eef0f2 0%, #d5d8dc 100%);
+}
+.model-canvas { position: absolute; inset: 0; }
+.model-canvas canvas { display: block; outline: none; }
+
+/* Estado vacío y aviso de error: centrados sobre la vista */
+.model-empty,
+.model-notice {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.model-empty[hidden], .model-notice[hidden], .model-loader[hidden] { display: none; }
+
+.model-empty {
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.model-empty h2 { color: var(--text); font-size: var(--fs-4xl); }
+.model-empty p  { max-width: 380px; font-size: var(--fs-md); line-height: 1.5; }
+.model-empty .tb-btn { margin-top: 6px; height: 32px; padding: 0 14px; }
+.model-empty-icon .lucide { width: 44px; height: 44px; color: var(--n-500); }
+
+.model-notice { background: rgba(238, 240, 242, .92); }
+.model-notice-box {
+  max-width: 460px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--n-0);
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+}
+.model-notice-icon .lucide { width: 30px; height: 30px; color: var(--accent); }
+.model-notice-box h2 { margin: 6px 0; font-size: var(--fs-3xl); color: var(--text); }
+.model-notice-box p  { font-size: var(--fs-md); color: var(--text-muted); line-height: 1.5; }
+.model-notice-box details { margin-top: 12px; text-align: left; font-size: var(--fs-sm); }
+.model-notice-box summary { cursor: pointer; color: var(--text-muted); }
+.model-notice-box pre {
+  max-height: 180px;
+  margin-top: 6px;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--n-50);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Cargando / procesando: píldora arriba al centro (el modelo se ve debajo) */
+.model-loader {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--n-0);
+  color: var(--text);
+  font-size: var(--fs-md);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .12);
+}
+.model-loader-lines { display: flex; flex-direction: column; gap: 2px; }
+.model-loader-note { color: var(--text-muted); font-size: var(--fs-sm); }
+.model-loader-note[hidden] { display: none; }
+.model-spin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--n-200);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: model-spin .8s linear infinite;
+}
+@keyframes model-spin { to { transform: rotate(360deg); } }
+
+/* Arrastrar un archivo encima */
+.model-drop-hint {
+  position: absolute;
+  inset: 12px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  pointer-events: none;
+}
+.model-wrapper.is-dragover .model-drop-hint { display: flex; }
+
+/* Etiqueta anclada al modelo (ver bim-markers.ts). Va en la capa 2D del
+   renderer, sobre el lienzo: sin pointer-events no estorba al seleccionar. */
+.model-marker {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-toolbar);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgb(0 0 0 / .18);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ══════════════════ Cubo de navegación (ver model-navcube.ts) ══════════════════
+
+   ThatOpen NO trae un ViewCube (verificado en los tres paquetes instalados y
+   en su documentación), así que es propio: un cubo en CSS 3D que gira con la
+   cámara y cuyas caras llevan a las seis vistas ortogonales.
+   ════════════════════════════════════════════════════════════════════════ */
+
+.navcube {
+  position: absolute;
+  right: var(--navcube-margin);
+  bottom: var(--navcube-margin);   /* esquina inferior derecha, como en Revit/Navisworks */
+  width: var(--navcube-size);
+  height: var(--navcube-size);
+  perspective: 300px;      /* más bajo = más perspectiva, se nota mejor el volumen */
+  z-index: 6;              /* sobre el lienzo, bajo los paneles (z-index: 10) */
+  filter: drop-shadow(0 2px 6px rgb(0 0 0 / .22));
+}
+.navcube[hidden] { display: none; }
+
+.navcube-box {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  /* Sin transición: los ángulos llegan en cada fotograma del giro de cámara */
+}
+
+.navcube-face {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--navcube-size);
+  height: var(--navcube-size);
+  margin: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  line-height: 1.1;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  text-align: center;
+  cursor: pointer;
+  /* Sin esto se leerían, del revés, los rótulos de las caras traseras */
+  backface-visibility: hidden;
+}
+.navcube-face:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Las seis caras: cada una se desplaza media arista desde el centro */
+.navcube-box { --half: calc(var(--navcube-size) / 2); }
+.nc-front  { transform: translateZ(var(--half)); }
+.nc-back   { transform: rotateY(180deg) translateZ(var(--half)); }
+.nc-right  { transform: rotateY(90deg)  translateZ(var(--half)); }
+.nc-left   { transform: rotateY(-90deg) translateZ(var(--half)); }
+.nc-top    { transform: rotateX(90deg)  translateZ(var(--half)); }
+.nc-bottom { transform: rotateX(-90deg) translateZ(var(--half)); }
+
+/* "Licencias" (lo inserta licenses.ts en .model-area) pasa a la esquina
+   inferior IZQUIERDA: la derecha es del cubo de navegación. Sólo afecta al
+   visor 3D; el de planos conserva su esquina de siempre. */
+.model-area .licenses-link {
+  right: auto;
+  left: 12px;
+  bottom: 10px;
+}

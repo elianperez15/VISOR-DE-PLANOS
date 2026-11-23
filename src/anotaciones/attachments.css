@@ -1,0 +1,33 @@
+/* attachments.css — Mini-toolbar sobre la figura y lightbox de imágenes */
+
+/* Mini-toolbar flotante sobre la figura seleccionada */
+.fig-toolbar {
+  position: fixed;
+  z-index: 600;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+}
+.fig-toolbar button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  background: transparent; border: none; border-radius: 5px;
+  color: var(--text); cursor: pointer;
+}
+.fig-toolbar button:hover { background: var(--surface-hover); }
+.fig-toolbar button.on { color: var(--accent); }
+.fig-toolbar .lucide { width: 16px; height: 16px; }
+
+/* Lightbox de imágenes adjuntas */
+.att-lightbox {
+  position: fixed; inset: 0; z-index: 3000;
+  background: rgba(0,0,0,.85);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out; padding: 32px;
+}
+.att-lightbox img { max-width: 95%; max-height: 95%; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.6); }

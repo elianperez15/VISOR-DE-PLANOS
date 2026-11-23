@@ -1,0 +1,472 @@
+/* model-panels.css — Paneles del visor 3D (Edificio, Propiedades) e instrucciones de la herramienta */
+
+/* ── Paneles acoplados a los lados (mismo aspecto que el panel de propiedades del plano) ── */
+.model-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  width: 292px;
+  min-height: 0;
+  background: var(--bg-toolbar);
+  overflow: hidden;
+  z-index: 10;
+}
+.model-panel[hidden] { display: none; }
+.model-panel-left  { border-right: 1px solid var(--border); }
+.model-panel-right { border-left: 1px solid var(--border); width: 320px; }
+
+.model-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.model-panel-title {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+.model-panel-title .lucide { width: 15px; height: 15px; }
+.model-panel-action {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.model-panel-action:hover { background: var(--surface-hover); }
+.model-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s;
+}
+.model-panel-close:hover { background: var(--surface-hover); color: var(--text); }
+.model-panel-close .lucide { width: 15px; height: 15px; }
+.model-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.model-panel-empty { padding: 11px 14px; color: var(--text-muted); font-size: var(--fs-md); line-height: 1.5; }
+
+/* Etiqueta de sección: igual que en el panel del plano */
+.model-section-label,
+.tree-section-title,
+.props-group > summary {
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+
+/* ── Árbol del edificio ── */
+.tree-section { padding: 6px 0 8px; border-bottom: 1px solid var(--surface-inset); }
+.tree-section-title {
+  padding: 6px 14px 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 8px 1px 6px;
+}
+.tree-row:hover { background: var(--surface-hover); }
+.tree-row.is-busy { opacity: .55; pointer-events: none; }
+.tree-row[data-visibility="hidden"] .tree-label { color: var(--n-500); }
+.tree-row[data-visibility="partial"] .tree-eye { color: var(--n-500); }
+
+.tree-eye, .tree-label, .tree-isolate {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.tree-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+}
+.tree-eye:hover { background: var(--surface-hover); }
+.tree-eye .lucide { width: 15px; height: 15px; }
+.tree-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: var(--fs-md);
+}
+.tree-label:hover { background: var(--surface-hover); }
+.tree-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tree-count { color: var(--text-muted); font-size: var(--fs-sm); }
+.tree-isolate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  visibility: hidden;
+}
+.tree-isolate .lucide { width: 14px; height: 14px; }
+.tree-row:hover .tree-isolate, .tree-isolate:focus-visible { visibility: visible; }
+.tree-isolate:hover { background: var(--accent-bg); color: var(--accent-strong); }
+
+/* ── Subtipos: "Losas" → "sueloAPI:-01" (ver bim-structure.subtypes) ── */
+.tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 24px;
+  margin-left: -4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.tree-toggle:hover { color: var(--text); }
+.tree-toggle .lucide {
+  width: 13px;
+  height: 13px;
+  transition: transform .12s ease;
+}
+.tree-expandable.is-open > .tree-row .tree-toggle .lucide { transform: rotate(90deg); }
+
+.tree-children { padding-left: 20px; }
+.tree-children[hidden] { display: none; }
+.tree-row-sub .tree-name { color: var(--text-muted); }
+.tree-row-sub .tree-label { font-size: var(--fs-sm); }
+.tree-loading {
+  padding: 5px 14px 7px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* ── Propiedades ── */
+.props-head { padding: 11px 14px; border-bottom: 1px solid var(--surface-inset); }
+.props-category {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent-strong);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.props-title { margin-top: 6px; font-size: var(--fs-lg); line-height: 1.35; word-break: break-word; }
+.props-section { padding: 11px 14px; border-bottom: 1px solid var(--surface-inset); }
+.props-section .model-section-label { margin-bottom: 9px; }
+.props-table {
+  display: grid;
+  grid-template-columns: minmax(90px, 40%) 1fr;
+  gap: 5px 10px;
+  margin: 0;
+  font-size: var(--fs-base);
+}
+.props-table dt { color: var(--text-muted); }
+.props-table dd { margin: 0; color: var(--text); word-break: break-word; }
+.props-group { padding: 0 14px; border-bottom: 1px solid var(--surface-inset); }
+.props-group > summary { padding: 11px 0; cursor: pointer; user-select: none; }
+.props-group[open] > .props-table { padding-bottom: 11px; }
+
+/* ── Instrucciones de la herramienta activa (abajo, al centro) ── */
+.model-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: min(640px, calc(100% - 32px));
+  padding: 8px 16px;
+  transform: translateX(-50%);
+  border-radius: var(--radius-md);
+  background: rgba(27, 29, 32, .88);
+  color: #fff;
+  font-size: var(--fs-md);
+  text-align: center;
+  pointer-events: none;
+}
+.model-hint[hidden] { display: none; }
+.model-hint-footer { color: rgba(255, 255, 255, .7); font-size: var(--fs-sm); }
+
+/* ══════════════════ Panel "Buscar" (ver model-search-panel.ts) ══════════════════ */
+
+.model-search-form {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.model-search-input,
+.model-search-select {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+.model-search-input:focus,
+.model-search-select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.model-search-input::-webkit-search-cancel-button { cursor: pointer; }
+
+.model-search-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-search-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.model-search-actions .model-panel-action:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.model-search-actions .model-panel-action:disabled:hover { background: transparent; }
+
+/* Una fila por NOMBRE: nombre y tipo a la izquierda, cuántos hay, y aislar */
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 14px;
+}
+.search-row:hover { background: var(--surface-hover); }
+.search-row.is-busy { opacity: .55; pointer-events: none; }
+
+.search-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.search-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.search-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-md);
+}
+.search-category { color: var(--text-muted); font-size: var(--fs-sm); }
+.search-count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.search-isolate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+.search-row:hover .search-isolate,
+.search-isolate:focus-visible { visibility: visible; }
+.search-isolate:hover { background: var(--accent-bg); color: var(--accent-strong); }
+.search-isolate .lucide { width: 14px; height: 14px; }
+
+.model-panel-note {
+  padding: 9px 14px;
+  border-top: 1px solid var(--surface-inset);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* ══════════════════ Panel "Vistas" (ver model-views-panel.ts) ══════════════════ */
+
+.views-section { padding: 6px 0 8px; border-bottom: 1px solid var(--surface-inset); }
+.views-section:last-child { border-bottom: none; }
+.views-section-title {
+  padding: 4px 14px;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.views-section-actions { padding: 6px 14px 4px; }
+.views-section-actions .model-panel-action { width: 100%; }
+.views-section-actions .model-panel-action:disabled { opacity: .45; cursor: default; }
+
+/* ── Vistas 2D ── */
+.views-group-title {
+  padding: 8px 14px 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.views-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+.views-row:hover { background: var(--surface-hover); }
+.views-row .lucide { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-muted); }
+.views-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.views-row.is-open { background: var(--accent-bg); color: var(--accent); }
+.views-row.is-open .lucide { color: var(--accent); }
+
+/* ── Puntos de vista ── */
+.viewpoint-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 4px 14px;
+}
+.viewpoint-row:hover { background: var(--surface-hover); }
+.viewpoint-row.is-busy { opacity: .55; pointer-events: none; }
+.viewpoint-go {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.viewpoint-thumb {
+  flex-shrink: 0;
+  width: 46px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--surface-inset);
+}
+.viewpoint-thumb-empty { display: inline-block; }
+.viewpoint-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.viewpoint-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-md);
+}
+.viewpoint-count { color: var(--text-muted); font-size: var(--fs-sm); }
+.viewpoint-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.viewpoint-remove:hover { background: var(--surface-hover); color: var(--text); }
+.viewpoint-remove .lucide { width: 14px; height: 14px; }
+
+/* ── Pestañas del panel "Edificio" (ver model-tree-panel.ts) ── */
+.model-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.model-tabs[hidden] { display: none; }
+.model-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px 7px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.model-tab:hover { color: var(--text); }
+.model-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 500;
+}

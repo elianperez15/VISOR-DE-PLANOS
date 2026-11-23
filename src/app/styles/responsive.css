@@ -1,0 +1,72 @@
+/* responsive.css — Ajustes responsive (van al final: sobrescriben al resto) */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RESPONSIVE — adaptación a distintos tamaños de pantalla
+   La app es "desktop-first" (un visor de planos). Estas reglas la degradan
+   con gracia en laptops pequeñas, tablets y teléfonos, sin tocar el layout
+   base de escritorio. El riel flotante se re-encaja solo al redimensionar
+   (ver rail-drag.ts), así que aquí sólo ajustamos tamaños.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Laptops pequeñas / tablets en horizontal (≤ 1024px) ── */
+@media (max-width: 1024px) {
+  .saf-toolbar { gap: 2px; padding: 0 6px; }
+  .annot-panel { width: 280px; }
+}
+
+/* ── Tablets / teléfonos grandes (≤ 820px) ── */
+@media (max-width: 820px) {
+  /* Panel de propiedades: no invade tanto el lienzo */
+  .annot-panel { width: min(300px, 84vw); }
+
+  /* La barra de comparación se envuelve y se compacta */
+  .compare-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 10px;
+    bottom: 12px;
+    padding: 8px 10px;
+  }
+  .compare-bar .cmp-div { display: none; }
+
+  /* Panel de área no se sale por el borde */
+  .area-panel { right: 12px; bottom: 12px; }
+}
+
+/* ── Teléfonos (≤ 560px) ── */
+@media (max-width: 560px) {
+  /* El panel de propiedades pasa a ocupar casi todo el ancho (hoja) */
+  .annot-panel {
+    width: 100vw;
+    box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+  }
+
+  /* Riel un poco más compacto para dejar sitio al plano */
+  .tool-rail            { width: 46px; }
+  .tool-rail .tb-btn    { width: 36px; height: 36px; }
+  .tool-rail.rail-horizontal { height: 50px; }
+
+  /* Barra de comparación de borde a borde */
+  .compare-bar {
+    left: 8px;
+    right: 8px;
+    transform: none;
+    max-width: none;
+    gap: 8px;
+  }
+  .compare-bar .cmp-revs { flex: 1 1 auto; min-width: 0; }
+
+  /* Modales casi a pantalla completa */
+  .modal-box { width: 94vw; padding: 22px; }
+  .modal-card, .plano-pick-card, .confirm-card { width: 94vw; }
+
+  /* Toast de guardado de borde a borde */
+  .save-toast { max-width: calc(100vw - 24px); }
+}
+
+/* ── Pantallas bajas (≤ 560px de alto): modales con scroll interno ── */
+@media (max-height: 560px) {
+  .modal-box      { max-height: 94vh; }
+  .cal-box        { max-height: calc(100vh - var(--toolbar-h) - 20px); }
+  .plano-pick-card, .modal-card { max-height: 92vh; }
+}

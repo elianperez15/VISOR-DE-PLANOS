@@ -1,0 +1,112 @@
+/* modals.css — Modales: overlay, caja, acciones estándar */
+
+/* ── Modales ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(4px);
+}
+
+/* Calibración: el overlay NO bloquea el canvas (los clics pasan al plano) y el
+   panel se ancla SIEMPRE a la misma esquina — no salta al cambiar de pestaña.
+   Se ancla arriba-derecha, por debajo de la barra superior. */
+.modal-overlay.modal-pick {
+  pointer-events: none;
+  background: transparent;
+  backdrop-filter: none;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: calc(var(--toolbar-h, 44px) + 14px) 16px 16px;
+}
+.modal-overlay.modal-pick .modal-box {
+  pointer-events: auto;
+  box-shadow: 0 18px 50px rgba(0,0,0,.75);
+}
+
+.modal-box {
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 28px;
+  width: min(380px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 48px rgba(0,0,0,.7);
+}
+
+.modal-box h3 {
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  margin-bottom: 14px;
+}
+
+.modal-box p {
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
+.modal-hint {
+  font-size: var(--fs-base);
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-bg-2);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 10px;
+}
+.modal-hint strong {
+  color: var(--text);
+  background: var(--surface-hover);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ══════════ Estándar de acciones de modal ══════════
+   Footer alineado a la derecha, mismo orden en TODAS: [Cancelar] [Acción].
+   Cancelar siempre a la izquierda del botón principal, ambos abajo-derecha. */
+.modal-actions,
+.confirm-actions {
+  display: flex;
+  justify-content: center;    /* botones centrados */
+  align-items: center;
+  gap: 8px;
+  min-height: 50px;           /* mismo alto que el header */
+  margin-top: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+.modal-actions .tb-btn,
+.confirm-btn {
+  display: inline-flex;       /* icono ✕ + texto en línea, centrados */
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 110px;
+  padding: 0 16px;
+  justify-content: center;
+  border-radius: 0;
+  flex: none;                 /* nada de botones a todo el ancho: tamaño consistente */
+}
+/* Icono de los botones del footer (✕ Cancelar): algo menor que el del toolbar */
+.modal-actions .tb-btn .lucide,
+.confirm-btn .lucide { width: 15px; height: 15px; }
+/* Footers a todo el ancho también en cajas con padding propio (sello / confirmación) */
+.modal-stamp .modal-actions   { margin: 12px -28px -28px; }
+.confirm-card .confirm-actions { margin: 0 -22px -18px; }
+
+/* ══════════ Estándar de modales: bordes rectos ══════════ */
+.modal-overlay input,
+.modal-overlay select,
+.modal-overlay textarea,
+.modal-overlay .tb-btn,
+.cal-tabs, .cal-tab,
+.cal-result, .cal-measured, .cal-step-chip,
+.plano-search,
+.stamp-opt, .stamp-label { border-radius: 0; }
